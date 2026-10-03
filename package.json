@@ -1,0 +1,9 @@
+{
+  "name": "graph-engine-exercise",
+  "private": true,
+  "type": "module",
+  "description": "Traffic routing graph engine, extracted for engineering exercises",
+  "scripts": {
+    "test": "node test/engine.test.mjs && node test/validate.test.mjs && node test/compile.test.mjs"
+  }
+}

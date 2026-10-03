@@ -1,0 +1,37 @@
+{
+  "description": "Bots are filtered. US visitors see the main page then offer A. Everyone else sees the alternate page then offer B.",
+  "graph": {
+    "entry": "entry",
+    "nodes": {
+      "entry": { "id": "entry", "kind": "traffic" },
+      "bots": { "id": "bots", "kind": "filter", "when": { "conds": [{ "type": "bot_ua" }] } },
+      "us": { "id": "us", "kind": "path", "when": { "country": ["US"] } },
+      "page_main": { "id": "page_main", "kind": "lander", "ref": "ld_main" },
+      "page_alt": { "id": "page_alt", "kind": "lander", "ref": "ld_alt" },
+      "offer_a": { "id": "offer_a", "kind": "offer", "ref": "of_a" },
+      "offer_b": { "id": "offer_b", "kind": "offer", "ref": "of_b" },
+      "px": { "id": "px", "kind": "pixel" }
+    },
+    "edges": [
+      { "from": "entry", "to": "bots", "weight": 1 },
+      { "from": "entry", "to": "us", "weight": 1 },
+      { "from": "entry", "to": "page_alt", "weight": 1 },
+      { "from": "us", "to": "page_main", "weight": 1 },
+      { "from": "page_main", "to": "offer_a", "weight": 1 },
+      { "from": "page_main", "to": "px", "weight": 1 },
+      { "from": "page_alt", "to": "offer_b", "weight": 1 }
+    ]
+  },
+  "refs": {
+    "landers": {
+      "ld_main": { "kv_key": "pages/main", "source": null },
+      "ld_alt": { "kv_key": "pages/alt", "source": null }
+    },
+    "offers": {
+      "of_a": { "url_template": "https://offer-a.example.com/?click={click_id}" },
+      "of_b": { "url_template": "https://offer-b.example.com/?click={click_id}" }
+    },
+    "rules": {},
+    "valueLists": {}
+  }
+}

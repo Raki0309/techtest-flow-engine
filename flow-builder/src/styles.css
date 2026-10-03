@@ -1,0 +1,132 @@
+/* Design tokens and the flow-builder component styles, ported from RoninConv's apps/ui/src/styles.css
+   (the "ronin" light skin, plus a dark variant via prefers-color-scheme). Trimmed to what this
+   page actually uses: no dashboard/table/settings chrome, just the builder itself. */
+:root {
+  --bg: #f7f4f5; --panel: #ffffff; --panel2: #f2edef; --line: #e6dde1;
+  --text: #241820; --dim: #7a6670; --faint: #ab98a1;
+  --accent: #7a1136; --accent-ink: #ffffff;
+  --good: #0f9d6a; --bad: #dc2626; --warn: #c77414;
+  --chip: #f7e7ec; --focus: #7a11363d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0e17; --panel: #101626; --panel2: #161d31; --line: #232c45;
+    --text: #e8ecf4; --dim: #8b94ab; --faint: #59617a;
+    --accent: #d4b268; --accent-ink: #171207;
+    --good: #34d399; --bad: #f87171; --warn: #fbbf24;
+    --chip: #1b2340; --focus: #d4b26855;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 13.5px; -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--focus); }
+
+.shell { display: flex; flex-direction: column; height: 100%; }
+.topbar {
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 50px; flex: none;
+}
+.topbar .spacer { flex: 1; }
+.validation { padding: 8px 18px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.validation.ok { color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
+.validation.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.floweditor-body { flex: 1; display: flex; min-height: 0; }
+
+/* ── primitives ──────────────────────────────────────────────────────────── */
+.btn {
+  background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px;
+  padding: 7px 14px; font: inherit; font-weight: 700; cursor: pointer;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn.ghost { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+.btn.tiny { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+.btn.danger { background: transparent; border: 1px solid var(--bad); color: var(--bad); }
+input, select, textarea {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; font: inherit; width: 100%;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus); border-color: var(--accent); }
+label { display: block; font-size: 12px; color: var(--dim); font-weight: 700; margin: 12px 0 5px; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+.dim { color: var(--dim); } .faint { color: var(--faint); }
+.err { color: var(--bad); font-size: 13px; margin-top: 10px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  background: var(--chip); color: var(--dim); border: 1px solid transparent; border-radius: 999px;
+  padding: 4px 12px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.chip:hover { color: var(--text); }
+.chip.on { color: var(--accent); border-color: var(--accent); background: var(--panel); }
+
+/* ── modal (JSON view) ───────────────────────────────────────────────────── */
+.overlay { position: fixed; inset: 0; background: #000a; display: flex; align-items: center;
+  justify-content: center; z-index: 50; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 20px 22px; width: min(680px, 94vw); max-height: 88vh; overflow: auto; }
+.modal.wide { width: min(820px, 96vw); }
+.modal h2 { margin: 0 0 4px; font-size: 16px; }
+.modal .foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.jsonview { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  max-height: 55vh; overflow: auto; }
+
+/* ── flow inspector panel ────────────────────────────────────────────────── */
+.finspect {
+  width: 330px; flex: none; border-left: 1px solid var(--line); background: var(--panel);
+  padding: 16px 18px; overflow: auto;
+}
+.finspect-empty { padding: 40px 8px; text-align: center; font-size: 13px; }
+.finspect-h { font-size: 14px; font-weight: 800; margin-bottom: 4px; }
+.finspect-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+@media (max-width: 760px) {
+  .floweditor-body { flex-direction: column; }
+  .finspect { width: auto; border-left: 0; border-top: 1px solid var(--line); max-height: 42vh; }
+}
+
+/* ── freeform graph canvas ───────────────────────────────────────────────── */
+.gcanvas { flex: 1; overflow: auto; position: relative; user-select: none; touch-action: none;
+  background: radial-gradient(circle, var(--line) 1px, transparent 1px) 0 0 / 22px 22px, var(--bg); }
+.gcanvas.fit { overflow: hidden; }
+.gcanvas.fit .gnode { cursor: pointer; }
+.gcanvas-inner { position: relative; min-width: 100%; min-height: 100%; }
+.gsvg { position: absolute; left: 0; top: 0; }
+.gnode { position: absolute; background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px;
+  padding: 8px 11px; cursor: grab; box-shadow: 0 1px 4px #0000001f; box-sizing: border-box;
+  min-height: 58px; display: flex; flex-direction: column; justify-content: center; z-index: 2; }
+.gnode:active { cursor: grabbing; }
+.gnode.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); z-index: 4; }
+.gnode.offer { border-left: 4px solid var(--good); }
+.gnode.lander { border-left: 4px solid var(--accent); }
+.gnode.pixel { border-left: 4px solid #8b5cf6; }
+.gnode.entry { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); z-index: 3; }
+.gnode.entry .gnode-kind { color: var(--accent-ink); opacity: .95; }
+.gnode-kind { font-size: 11px; font-weight: 700; color: var(--dim); display: flex; align-items: baseline; gap: 6px;
+  text-transform: uppercase; letter-spacing: .3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gnode-kind.noted { text-transform: none; letter-spacing: 0; color: var(--text); font-size: 12.5px; font-weight: 700;
+  white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.gnode-ic { font-size: 12px; flex: none; }
+.gnode-label { font-size: 13px; font-weight: 600; margin-top: 2px; line-height: 1.25;
+  white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.ghandle { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); width: 15px; height: 15px;
+  border-radius: 50%; background: var(--panel); border: 2.5px solid var(--accent); cursor: crosshair; z-index: 5; }
+.ghandle:hover { background: var(--accent); }
+.gnode.entry .ghandle { border-color: var(--accent-ink); background: var(--accent); }
+.gpalette { position: absolute; bottom: 12px; left: 12px; margin: 12px; display: inline-flex; gap: 8px;
+  align-items: center; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 6px 20px #0003; z-index: 10; }
+.gpalette-sep { width: 1px; align-self: stretch; background: var(--line); margin: -2px 2px; }
+.gnode.path { border-left: 4px solid var(--warn); }
+.gnode.matrix { color: #fff; box-shadow: 0 3px 10px #0004; }
+.gnode.matrix .gnode-kind, .gnode.matrix .gnode-kind.noted { color: inherit; opacity: .92; }
+.gnode.mx-lander { background: var(--accent); border-color: var(--accent); }
+.gnode.mx-offer { background: var(--good); border-color: var(--good); }
+.gnode.mx-lander .ghandle { border-color: #fff; background: var(--accent); }
+.gedge-lbl { display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px;
+  font-size: 10.5px; color: var(--dim); font-weight: 600; }
