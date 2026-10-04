@@ -1,5 +1,7 @@
 https://kommodo.ai/recordings/qwWqTiN8E1p3sUhxTFYo?onlyRecording=1
 
+> **Tech test flow:** see [FLOW.md](FLOW.md) for the checkpoint flow added in this repo.
+
 # Flow graph engine
 
 A small, dependency-free engine that decides where a visitor goes. A campaign is a directed graph

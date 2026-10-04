@@ -85,5 +85,20 @@ const visitor = (over = {}) => ({ country: 'US', device: 'mobile', signals: {}, 
   ok(us && us.offer && us.landers.length === 1, 'example: a US visitor reaches an offer through a lander');
   ok(resolveGraph(c, visitor({ country: 'US', signals: { bot_ua: true } }), rng).filtered === true, 'example: a bot is filtered');
 }
-
+{
+  // the checkpoint flow: reviewers, bots and datacenter traffic are stopped first, then split by audience
+  const flow = JSON.parse(readFileSync(new URL('../examples/checkpoint-flow.json', import.meta.url), 'utf8'));
+  ok(validateGraph(flow.graph) === null, 'checkpoint flow: valid');
+  const c = compileGraph(flow.graph, flow.refs);
+  const stoppedAt = (signals) => resolveGraph(c, visitor({ signals }), rng);
+  ok(stoppedAt({ moderator: true }).node_id === 'stop_reviewers', 'checkpoint flow: an ad reviewer is stopped first');
+  ok(stoppedAt({ moderator: true, bot_ua: true }).node_id === 'stop_reviewers', 'checkpoint flow: a reviewer who is also a bot counts as a reviewer');
+  ok(stoppedAt({ bot_ua: true }).node_id === 'stop_bots', 'checkpoint flow: a bot is stopped');
+  ok(stoppedAt({ datacenter: true }).action === 'challenge', 'checkpoint flow: datacenter traffic gets a challenge, not a 404');
+  ok(resolveGraph(c, visitor({ signals: { datacenter: true } }), rng, { bypassFilterId: 'check_datacenter' }).offer.id === 'of_main',
+    'checkpoint flow: passing the challenge continues to an offer');
+  ok(resolveGraph(c, visitor(), rng).offer.id === 'of_main', 'checkpoint flow: US mobile reaches the main offer');
+  ok(resolveGraph(c, visitor({ country: 'DE', device: 'desktop' }), rng).offer.id === 'of_eu', 'checkpoint flow: Europe reaches the EU offer');
+  ok(resolveGraph(c, visitor({ device: 'desktop' }), rng).offer.id === 'of_backup', 'checkpoint flow: everyone else reaches the backup offer');
+}
 done();
