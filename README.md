@@ -1,6 +1,6 @@
 https://kommodo.ai/recordings/qwWqTiN8E1p3sUhxTFYo?onlyRecording=1
 
-> **Tech test flow:** see [FLOW.md](FLOW.md) for the checkpoint flow added in this repo.
+> **Builder revamp:** see [FLOW.md](FLOW.md) for what changed and how to read a flow.
 
 # Flow graph engine
 

@@ -267,4 +267,34 @@ const bot = { country: 'US', device: 'desktop', signals: { bot_ua: true } };
     'onVisit: a chained filter that lets the visitor through is recorded like any waypoint');
 }
 
+// ── priority: the lowest matching number wins, equal numbers split by weight ──────────────────
+{
+  const US = { logical: 'and', conds: [{ type: 'country', values: ['US'] }] };
+  const MOBILE = { logical: 'and', conds: [{ type: 'device', values: ['mobile'] }] };
+  const pn = { entry: { kind: 'traffic' }, a: { kind: 'lander', ref_id: 'a', kv_key: 'ka' }, b: { kind: 'lander', ref_id: 'b', kv_key: 'kb' },
+    c: { kind: 'lander', ref_id: 'c', kv_key: 'kc' }, bot: { kind: 'filter', when: BOT }, o: { kind: 'offer', ref_id: 'o', url_template: 'https://o/' } };
+  const toOffer = ['a', 'b', 'c'].map((from) => ({ from, to: 'o', weight: 1 }));
+  const g = { entry: 'entry', nodes: pn, edges: [
+    { from: 'entry', to: 'a', weight: 1, when: US, priority: 2 },
+    { from: 'entry', to: 'b', weight: 1, when: MOBILE, priority: 1 },
+    { from: 'entry', to: 'c', weight: 1 }, ...toOffer] };
+  const usMobile = { country: 'US', device: 'mobile', signals: {} };
+  const usDesktop = { country: 'US', device: 'desktop', signals: {} };
+  const deDesktop = { country: 'DE', device: 'desktop', signals: {} };
+  ok([0, 0.3, 0.6, 0.99].every((r) => resolveGraph(g, usMobile, () => r).landers[0].id === 'b'), 'priority: the lowest matching priority wins');
+  ok(resolveGraph(g, usDesktop, rng).landers[0].id === 'a', 'priority: falls through to priority 2 when 1 does not match');
+  ok(resolveGraph(g, deDesktop, rng).landers[0].id === 'c', 'priority: the unconditional edge is used when none match');
+  const gTie = { entry: 'entry', nodes: pn, edges: [
+    { from: 'entry', to: 'a', weight: 1, when: US, priority: 1 },
+    { from: 'entry', to: 'b', weight: 1, when: MOBILE, priority: 1 }, ...toOffer] };
+  ok(resolveGraph(gTie, usMobile, () => 0.1).landers[0].id === 'a' && resolveGraph(gTie, usMobile, () => 0.9).landers[0].id === 'b',
+    'priority: equal priorities still split by weight');
+  const gWithBotFilter = { ...g, edges: [...g.edges, { from: 'entry', to: 'bot', weight: 1, when: BOT }] };
+  ok(resolveGraph(gWithBotFilter, { ...usMobile, signals: { bot_ua: true } }, rng).filtered === true, 'priority: a matching terminal filter still wins');
+  const gMixed = { entry: 'entry', nodes: pn, edges: [
+    { from: 'entry', to: 'a', weight: 1, when: US, priority: 1 },
+    { from: 'entry', to: 'b', weight: 1, when: MOBILE }, ...toOffer] };
+  ok(resolveGraph(gMixed, usMobile, () => 0.99).landers[0].id === 'a', 'priority: numbered edges beat unnumbered ones');
+}
+
 done();

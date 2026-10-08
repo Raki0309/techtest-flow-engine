@@ -40,6 +40,7 @@ export function compileGraph(graph, { landers = {}, offers = {}, rules = {}, val
       challenge: n.action === 'challenge' ? (n.challenge || null) : null };
     else nodes[id] = { kind: n.kind };
   }
-  const edges = (g.edges || []).map((e) => ({ from: e.from, to: e.to, weight: e.weight || 1, when: compileWhen(e.when) }));
+  const edges = (g.edges || []).map((e) => ({ from: e.from, to: e.to, weight: e.weight || 1, when: compileWhen(e.when),
+    ...(Number.isFinite(e.priority) ? { priority: e.priority } : {}) }));
   return { entry: g.entry, nodes, edges };
 }

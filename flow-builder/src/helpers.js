@@ -1,17 +1,52 @@
 // Shared helpers for the graph builder. Extracted verbatim from RoninConv's apps/ui/src/App.jsx.
+import { nodeRows } from './rows.js';
 
 export const DEVICES = ['mobile', 'desktop', 'tablet'];
 export const OSES = ['ios', 'android', 'windows', 'macos', 'linux', 'other'];
 export const gid = () => 'n' + crypto.randomUUID().slice(0, 8);
-export const GNODE_W = 172, GNODE_H = 58;
+// The flow's start ("Visitors arrive"): new kind 'entry', old 'traffic' entries, or graph.entry.
+// It can't be deleted, duplicated or copied.
+export const isEntryNode = (graph, id) => id === (graph.entry || 'entry') || ['entry', 'traffic'].includes(graph.nodes?.[id]?.kind);
+
+// Canvas geometry is fixed, so every port can be calculated without measuring the DOM.
+export const NODE_W = 240, HEADER_H = 40, ROW_H = 34, ADD_H = 20;
+export const nodeHeight = (rowCount, canAdd) => HEADER_H + Math.max(1, rowCount) * ROW_H + (canAdd ? ADD_H : 0);
+export const rowPortY = (node, i) => node.y + HEADER_H + ROW_H * i + ROW_H / 2;
+export const PIXEL_BODY_H = 60;
+// A filter's automatic end box hangs END_DROP below the node, centred under it.
+export const END_W = 170, END_DROP = 24;
+export const endBoxHeight = (n) => (n?.kind === 'filter' ? (n.action === 'challenge' ? 44 : 30) : 0);
+
+// Nodes that get a "+ add" exit (path and page lookup tables too: the old canvas let them connect).
+const ADD_KINDS = new Set(['entry', 'traffic', 'route', 'split', 'lander', 'filter', 'path']);
+export const canAddFrom = (n) => ADD_KINDS.has(n.kind) || (n.kind === 'matrix' && n.of === 'lander');
+// The node box itself: pixels have a fixed explanation body, everything else is rows.
+export const boxHeight = (n, rowCount, add) => (n.kind === 'pixel' ? HEADER_H + PIXEL_BODY_H : nodeHeight(rowCount, add));
+// The height a node occupies in its column: its box, plus a filter's end box hanging below it.
+export function nodeFootprint(graph, id, rules = [], readOnly = false) {
+  const n = (graph.nodes || {})[id];
+  if (!n) return 0;
+  const box = boxHeight(n, nodeRows(graph, id, rules).length, !readOnly && canAddFrom(n));
+  return n.kind === 'filter' ? box + END_DROP + endBoxHeight(n) : box;
+}
+
+// May a row's connection be re-pointed at `to`? Never at the entry, back at its own node, at a node
+// the source already connects to, or at a pixel (pixel lines are not rows, so the row would vanish).
+export function retargetAllowed(graph, edgeId, to) {
+  const nodes = graph.nodes || {}, edges = graph.edges || [];
+  const edge = edges.find((e) => e.id === edgeId);
+  const t = nodes[to];
+  if (!edge || !t || to === edge.from || t.kind === 'pixel') return false;
+  if (to === (graph.entry || 'entry') || t.kind === 'entry' || t.kind === 'traffic') return false;
+  return !edges.some((e) => e.from === edge.from && e.to === to);
+}
 
 // Build an editable graph from any stored routing (graph | tree | legacy paths | empty).
 export function toGraph(routing) {
   if (routing?.graph?.nodes) {
     const g = structuredClone(routing.graph);
-    let i = 0;
-    for (const n of Object.values(g.nodes)) { if (typeof n.x !== 'number') { n.x = 60 + (i % 4) * 200; n.y = 40 + Math.floor(i / 4) * 130; } i++; }
-    g.edges = (g.edges || []).map((e) => ({ id: e.id || gid(), ...e }));
+    g.edges = (g.edges || []).map((e) => ({ ...e, id: e.id || gid() }));
+    g.nodes = placeMissing(g.nodes, g.edges);
     if (!g.entry) g.entry = 'entry';
     return g;
   }
@@ -41,46 +76,63 @@ export function toGraph(routing) {
   return { entry: 'entry', nodes, edges };
 }
 
-// BFS layered layout for initial positions (user drags freely afterward)
-export function layoutGraph(nodes, edges) {
-  const depth = { entry: 0 };
-  const q = ['entry'];
-  while (q.length) { const n = q.shift(); for (const e of edges.filter((x) => x.from === n)) { if (depth[e.to] == null) { depth[e.to] = depth[n] + 1; q.push(e.to); } } }
-  const byDepth = {};
-  for (const id of Object.keys(nodes)) { const d = depth[id] ?? 1; (byDepth[d] = byDepth[d] || []).push(id); }
-  for (const [d, ids] of Object.entries(byDepth)) ids.forEach((id, i) => { nodes[id].x = 60 + i * (GNODE_W + 40); nodes[id].y = 40 + Number(d) * (GNODE_H + 70); });
+// Left-to-right layout (mutates `nodes`). Column = the LONGEST path from 'entry' (x = 40 + depth·300),
+// so every arrow points right; edges that close a loop (back edges found while walking from entry)
+// are ignored, so loops terminate. Each column stacks from y = 40 in reading order (breadth-first,
+// children in the parent's row order). Unreachable nodes go to column 1, pixels to one extra column.
+export function layoutGraph(nodes, edges = [], heightOf = () => 120) {
+  const graph = { entry: 'entry', nodes, edges };
+  const ids = Object.keys(nodes).filter((id) => nodes[id] && typeof nodes[id] === 'object');
+  const isPixel = (id) => nodes[id].kind === 'pixel';
+  const kids = {};
+  const childrenOf = (id) => (kids[id] ||= (() => {
+    const byRow = nodeRows(graph, id).map((r) => r.targetId).filter(Boolean);
+    const rest = edges.filter((e) => e.from === id).map((e) => e.to);
+    return [...new Set([...byRow, ...rest])].filter((to) => nodes[to] && !isPixel(to));
+  })());
+
+  // depth-first walk from entry: keep the edges that don't close a loop, collect a finishing order
+  const state = {}, forward = {}, finished = [];
+  const walk = (id) => {
+    state[id] = 'open'; forward[id] = [];
+    for (const to of childrenOf(id)) {
+      if (state[to] === 'open') continue;   // back edge
+      forward[id].push(to);
+      if (!state[to]) walk(to);
+    }
+    state[id] = 'done'; finished.push(id);
+  };
+  const depth = {};
+  if (nodes.entry && !isPixel('entry')) { walk('entry'); depth.entry = 0; }
+  // reverse finishing order is a topological order of the loop-free edges: longest path in one pass
+  for (const id of finished.reverse()) for (const to of forward[id]) depth[to] = Math.max(depth[to] ?? 0, depth[id] + 1);
+
+  // reading order inside a column: breadth-first from entry, children in row order
+  const order = depth.entry === 0 ? ['entry'] : [];
+  const seen = new Set(order);
+  for (let i = 0; i < order.length; i++) for (const to of childrenOf(order[i])) if (!seen.has(to)) { seen.add(to); order.push(to); }
+  const main = [...order, ...ids.filter((id) => depth[id] == null && !isPixel(id))];
+  const dOf = (id) => depth[id] ?? 1;
+  const deepest = main.reduce((m, id) => Math.max(m, dOf(id)), 0);
+  const nextY = new Map();
+  const place = (id, d) => {
+    const y = nextY.get(d) ?? 40;
+    nodes[id].x = 40 + d * 300;
+    nodes[id].y = y;
+    nextY.set(d, y + (Number(heightOf(id)) || 120) + 40);
+  };
+  main.forEach((id) => place(id, dOf(id)));
+  ids.filter(isPixel).forEach((id) => place(id, deepest + 1));
 }
 
-// module-level cache of named rules, lets ruleText() name a referenced rule
-let _rulesById = {};
-export function setRulesCache(rules) { _rulesById = Object.fromEntries((rules || []).map((r) => [r.id, r])); }
-
-export function ruleText(when, full) {
-  if (!when || !Object.keys(when).length) return '';
-  if (when.rule) return _rulesById[when.rule]?.name || 'rule';
-  const p = [];
-  if (when.device && when.device.length && when.device.length < DEVICES.length) p.push(when.device.join('/'));
-  if (when.os && when.os.length && when.os.length < OSES.length) p.push(when.os.join('/'));
-  if (when.country && when.country.length) p.push(when.country.join(','));
-  for (const c of when.conds || []) p.push(inlineCondText(c));
-  if (!p.length) return 'any';
-  const s = p.join(' · ');
-  return full || s.length <= 26 ? s : s.slice(0, 24) + '…';
-}
-
-// One inline cond as the builder shows it: `offer=test`, `{t1}=abc`.
-export function inlineCondText(c) {
-  const key = c.type === 'param' ? c.key : c.type === 'token' ? `{t${c.slot}}` : c.type === 'role' ? `{${c.role}}` : null;
-  if (key == null) return condText(c);
-  const val = c.op === 'exists' ? '' : (c.values && c.values.length ? c.values.join('|') : c.value ?? '');
-  return `${c.not ? '!' : ''}${key}${c.op === 'exists' ? '?' : c.op === 'contains' ? '~' : '='}${val}`;
-}
-
-export function condText(c) {
-  const n = c.not ? 'NOT ' : '';
-  if (c.type === 'suspicious') return `${n}suspicious`;
-  if (c.type === 'param') return `${n}param ${c.key} ${c.op || 'equals'}${c.op === 'exists' ? '' : ` "${c.value ?? ''}"`}`;
-  return `${n}${c.type} in ${(c.values || []).join('/')}`;
+// Old flows can be saved without positions. Returns `nodes` itself when every node has one, else a
+// copy where only the missing positions are filled in from the layout (the input is not mutated).
+export function placeMissing(nodes, edges = [], heightOf) {
+  const has = (n) => !n || (Number.isFinite(n.x) && Number.isFinite(n.y));
+  if (Object.values(nodes).every(has)) return nodes;
+  const laid = structuredClone(nodes);
+  layoutGraph(laid, edges, heightOf);
+  return Object.fromEntries(Object.entries(nodes).map(([id, n]) => [id, has(n) ? n : { ...n, x: laid[id].x, y: laid[id].y }]));
 }
 
 // The two URL-parameter chips write one cond each, in the rules-system format.

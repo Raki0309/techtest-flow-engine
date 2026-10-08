@@ -101,4 +101,36 @@ const visitor = (over = {}) => ({ country: 'US', device: 'mobile', signals: {}, 
   ok(resolveGraph(c, visitor({ country: 'DE', device: 'desktop' }), rng).offer.id === 'of_eu', 'checkpoint flow: Europe reaches the EU offer');
   ok(resolveGraph(c, visitor({ device: 'desktop' }), rng).offer.id === 'of_backup', 'checkpoint flow: everyone else reaches the backup offer');
 }
+{
+  const base = { entry: 'entry', nodes: { entry: { id: 'entry', kind: 'traffic' }, o: { id: 'o', kind: 'offer', ref: 'of_a' } } };
+  const cp = compileGraph({ ...base, edges: [{ from: 'entry', to: 'o', weight: 1, when: null, priority: 3 }] }, refs);
+  ok(cp.edges[0].priority === 3, 'compile: an edge keeps its priority');
+  const authoredWithoutPriority = { ...base, edges: [{ from: 'entry', to: 'o', weight: 1, when: null }] };
+  ok(!('priority' in compileGraph(authoredWithoutPriority, refs).edges[0]), 'compile: no priority key when none was set');
+}
+{
+  // a page lookup table's numbered lines keep their order once the table is expanded into rows
+  const authored = {
+    entry: 'entry',
+    nodes: {
+      entry: { id: 'entry', kind: 'traffic' },
+      mx: { id: 'mx', kind: 'matrix', of: 'lander', key: { type: 'param', key: 'plan' },
+        rows: [{ value: 'a', ref: 'ld_main' }], fallback: 'ld_alt' },
+      a: { id: 'a', kind: 'offer', ref: 'of_a' },
+      b: { id: 'b', kind: 'offer', ref: 'of_b' }
+    },
+    edges: [
+      { from: 'entry', to: 'mx', weight: 1 },
+      { from: 'mx', to: 'a', weight: 1, when: { country: ['US'] }, priority: 2 },
+      { from: 'mx', to: 'b', weight: 1, when: { device: ['mobile'] }, priority: 1 }
+    ]
+  };
+  const c = compileGraph(authored, refs);
+  ok(['mx_r0', 'mx_d'].every((rid) => c.edges.filter((e) => e.from === rid).map((e) => `${e.to}:${e.priority}`).join() === 'a:2,b:1'),
+    'matrix: every expanded row keeps the priority of the lookup table\'s lines');
+  // a US phone visitor matches both lines: priority 1 (offer b) must win whatever the dice say
+  const picks = [{ plan: 'a' }, { plan: 'zzz' }].flatMap((query) => [0, 0.25, 0.5, 0.75, 0.999]
+    .map((x) => resolveGraph(c, visitor({ query }), () => x).offer.id));
+  ok(picks.every((id) => id === 'of_b'), 'matrix: a page lookup table\'s priority-1 line always wins', picks.join());
+}
 done();

@@ -35,7 +35,9 @@ export function expandMatrix(g) {
       edges.push({ from: id, to: did, weight: 1, when: null });
       rowIds.push(did);
     }
-    for (const rid of rowIds) for (const e of outs) edges.push({ from: rid, to: e.to, weight: e.weight, when: e.when });
+    // copied lines keep their priority, so a numbered order still decides after expansion
+    for (const rid of rowIds) for (const e of outs) edges.push({ from: rid, to: e.to, weight: e.weight, when: e.when,
+      ...(Number.isFinite(e.priority) ? { priority: e.priority } : {}) });
     nodes[id] = { id, kind: 'path', when: null };
   }
   return { ...g, nodes, edges };

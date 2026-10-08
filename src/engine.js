@@ -112,7 +112,16 @@ export function resolveGraph(graph, ctx, rng, { skipFilters = false, bypassFilte
     // ruled edges that match win; otherwise the unconditional edges split by weight
     const ruled = outs.filter((e) => { const w = edgeWhen(e); return w && Object.keys(w).length; });
     const matchingRuled = ruled.filter((e) => matchWhen(edgeWhen(e), ctx));
-    const pool = matchingRuled.length ? matchingRuled : outs.filter((e) => { const w = edgeWhen(e); return !w || !Object.keys(w).length; });
+    // an optional numeric priority narrows the matching ruled edges to the lowest number, unless a
+    // terminal filter is among them (a blocker always wins). Equal priorities still split by weight.
+    const prio = (e) => (Number.isFinite(e.priority) ? e.priority : Infinity);
+    let ruledPool = matchingRuled;
+    const hasBlocker = ruledPool.some((e) => nodes[e.to]?.kind === 'filter' && !chained(e.to));
+    if (!hasBlocker && ruledPool.some((e) => Number.isFinite(e.priority))) {
+      const top = Math.min(...ruledPool.map(prio));
+      ruledPool = ruledPool.filter((e) => prio(e) === top);
+    }
+    const pool = ruledPool.length ? ruledPool : outs.filter((e) => { const w = edgeWhen(e); return !w || !Object.keys(w).length; });
     if (!pool.length) break;
     // a matching terminal filter beats every other matching edge instead of taking a weighted share
     const pick = pool.find((e) => nodes[e.to]?.kind === 'filter' && !chained(e.to)) || pickWeighted(pool, rng);
