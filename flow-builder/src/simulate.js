@@ -1,8 +1,9 @@
 // Test a visitor: pure logic. The REAL engine walks the flow (compileGraph + resolveGraph);
 // nothing is re-implemented here. This module only builds the visitor context, records the
 // visited nodes, and words the result.
-import { compileGraph, resolveGraph, rngFor } from '../../src/index.js';
-import { effectiveWhen } from './rows.js';
+import { compileGraph, resolveGraph, rngFor, upgradeFallbacks, MAX_STEPS } from '../../src/index.js';
+import { effectiveWhen, isCaught } from './rows.js';
+import { describeWhen } from './describe.js';
 import { TYPE_LABEL } from './names.js';
 
 export const DEFAULT_VISITOR = { country: 'US', device: 'mobile', os: 'ios', bot: false, vpn: false, reviewer: false, suspicious: false, params: '' };
@@ -70,6 +71,7 @@ export function challengeShort(challenge) {
 
 function run(graph, catalog, ctx, seed, bypassFilterId) {
   const authored = graph.nodes || {};
+  const authoredEdges = graph.edges || [];
   const compiled = compileGraph(graph, refsFromCatalog(catalog));
   const matrixIds = Object.keys(authored).filter((id) => authored[id].kind === 'matrix');
   const toCanvas = (id) => {
@@ -77,11 +79,29 @@ function run(graph, catalog, ctx, seed, bypassFilterId) {
     const m = matrixIds.find((mid) => id === `${mid}_d` || new RegExp(`^${mid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_r\\d+$`).test(id));
     return m || id;
   };
+  // the walk: nodes reached, and lines taken (with how many nodes had been reached when each was taken)
   const visited = [];
-  const result = resolveGraph(compiled, ctx, rngFor(seed), { bypassFilterId, onVisit: (id) => visited.push(id) });
+  const taken = [];
+  const result = resolveGraph(compiled, ctx, rngFor(seed), {
+    bypassFilterId, onVisit: (id) => visited.push(id), onEdge: (e) => taken.push({ e, at: visited.length }),
+  });
 
   const nodes = [];
   visited.forEach((id) => { const c = toCanvas(id); if (!nodes.includes(c)) nodes.push(c); });
+
+  // the authored line behind a taken one: its own id, else (lines inside lookup tables) the pair of canvas boxes
+  const authoredOf = ({ e }) => authoredEdges.find((x) => e.id && x.id === e.id)
+    || authoredEdges.find((x) => x.from === toCanvas(e.from) && x.to === toCanvas(e.to) && isCaught(x) === !!e.caught);
+  const edges = [];
+  let random = false;
+  taken.forEach((t) => {
+    const hit = authoredOf(t);
+    if (!hit) return;
+    if (hit.id !== undefined && !edges.includes(hit.id)) edges.push(hit.id);
+    // a random A/B pick only when the line taken was itself an unconditional share among two or more of its kind
+    const peers = authoredEdges.filter((x) => x.from === hit.from && isCaught(x) === isCaught(hit) && authored[x.to] && authored[x.to].kind !== 'pixel' && !effectiveWhen(graph, x));
+    if (!effectiveWhen(graph, hit) && peers.length >= 2) random = true;
+  });
 
   // name of a visited (compiled) id; matrix rows take the name of the thing they point at
   const nameFor = (rawId) => {
@@ -93,50 +113,70 @@ function run(graph, catalog, ctx, seed, bypassFilterId) {
     return nameOf(a ? a.kind : cn && cn.kind, a && a.note, null, catalog);
   };
 
-  // unconditional, non-pixel exits of a node: the ones the engine splits by share
-  const sharesOf = (id) => (graph.edges || []).filter((e) => e.from === id && authored[e.to] && authored[e.to].kind !== 'pixel' && !effectiveWhen(graph, e));
-  const edges = [];
-  let random = false;
-  for (let i = 0; i + 1 < nodes.length; i++) {
-    const hit = (graph.edges || []).find((e) => e.from === nodes[i] && e.to === nodes[i + 1]);
-    if (!hit) continue;
-    edges.push(hit.id);
-    // a random A/B pick only when the step taken was itself an unconditional share among two or more
-    if (!effectiveWhen(graph, hit) && sharesOf(nodes[i]).length >= 2) random = true;
-  }
+  // "<verb> at '<filter>': <its condition in words>" (the condition is left out when there is none)
+  const at = (verb, rawId) => {
+    const why = describeWhen(authored[toCanvas(rawId)]?.when, catalog.rules || []);
+    return `${verb} at '${nameFor(rawId)}'${why ? `: ${why}` : ''}`;
+  };
 
-  const out = { outcome: 'dead_end', text: '', nodes, edges, endFor: null, random };
-  if (result && result.filtered) {
+  // catches: every filter that sent the visitor down a fallback line, in order (a loop repeats them,
+  // so each filter is listed once)
+  const catches = taken.filter((t) => t.e.caught).map((t) => ({ filter: t.e.from, at: t.at }));
+  const last = catches[catches.length - 1];
+  const caughtBy = [...new Set(catches.map((c) => c.filter))];
+  const out = { outcome: 'dead_end', text: '', lines: caughtBy.map((id) => at('Caught', id)), nodes, edges, endFor: null, random };
+  const pagesAfter = (from) => visited.slice(from).filter((id) => compiled.nodes[id] && compiled.nodes[id].kind === 'lander').map(nameFor);
+  if (result && result.filtered && result.action !== 'fallback') {
     const name = nameFor(result.node_id);
     out.endFor = toCanvas(result.node_id);
     if (result.action === 'challenge') {
       out.outcome = 'challenge';
       out.text = `Challenge at '${name}' (${challengeShort(result.challenge)})`;
+      out.lines.push(at('Challenge', result.node_id), `→ ${challengeShort(result.challenge)}`);
     } else {
       out.outcome = 'blocked';
       out.text = `Blocked at '${name}' → 404 page`;
+      out.lines.push(at('Blocked', result.node_id), '→ 404 page');
     }
   } else if (result && result.offer) {
-    const pages = visited.filter((id) => compiled.nodes[id] && compiled.nodes[id].kind === 'lander').map(nameFor);
-    const offer = nameFor(visited[visited.length - 1]);
-    out.outcome = 'offer';
-    out.text = [...pages, offer].join(' → ');
-    if (!pages.length) out.text = `→ ${offer}`;
+    const path = [...pagesAfter(last ? last.at : 0), nameFor(visited[visited.length - 1])].join(' → ');
+    if (last) {
+      out.outcome = 'fallback';
+      out.text = `Caught at '${nameFor(last.filter)}' → ${path}`;
+      out.lines.push(`→ ${path}`);
+    } else {
+      out.outcome = 'offer';
+      out.text = pagesAfter(0).length ? path : `→ ${path}`;
+      out.lines = [out.text];
+    }
   } else {
-    const last = nodes.length ? nameFor(visited[visited.length - 1]) : TYPE_LABEL.entry;
-    out.text = `Stops at '${last}': nowhere to go (dead end)`;
+    // the engine gives up after MAX_STEPS steps: the visitor went round a loop, named by the first box reached twice
+    const again = visited.length >= MAX_STEPS ? visited.find((id, i) => visited.indexOf(id) < i) : undefined;
+    const stop = nodes.length ? nameFor(visited[visited.length - 1]) : TYPE_LABEL.entry;
+    out.text = again !== undefined ? `Goes round in a loop at '${nameFor(again)}'` : `Stops at '${stop}': nowhere to go (dead end)`;
+    out.lines.push(out.text);
   }
-  return out;
+  // firstCatch: the canvas id of the first filter that caught the visitor (simulateVisit asks what
+  // happens without it), kept apart from the result shown
+  return { res: out, firstCatch: catches.length ? toCanvas(catches[0].filter) : null };
 }
 
-export function simulateVisit(graph, catalog, visitor, seed = 'test') {
+export function simulateVisit(rawGraph, catalog, visitor, seed = 'test') {
+  const graph = upgradeFallbacks(rawGraph);   // an old-style fallback_to flow is read as fallback lines
   const cat = catalog || {};
   const ctx = toContext(visitor);
-  const res = run(graph, cat, ctx, seed, null);
+  const { res, firstCatch } = run(graph, cat, ctx, seed, null);
+  // the other side of a catch: where the visitor goes when this one filter lets them through
   if (res.outcome === 'challenge') {
-    const after = run(graph, cat, ctx, seed, res.endFor);
+    const after = run(graph, cat, ctx, seed, res.endFor).res;
     res.passText = `If they pass: ${after.text}`;
+    res.lines.push(res.passText);
     res.random = res.random || after.random;   // the pass branch may go through an A/B split
+  }
+  if (firstCatch) {
+    const after = run(graph, cat, ctx, seed, firstCatch).res;
+    res.lines.push(`If not caught here: ${after.text}`);
+    res.random = res.random || after.random;
   }
   return res;
 }

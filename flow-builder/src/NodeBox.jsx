@@ -4,7 +4,8 @@ import { worstLevel } from './checks.js';
 // One node on the canvas: a header (icon + type + name), then one row per outgoing connection, each
 // with its own exit dot, then the "+ add" strip. Heights are fixed (helpers.js), so the canvas can
 // place every line without measuring the DOM. Presentational only: GraphCanvas owns all state.
-// A filter's blocked row has no exit dot: its end box hangs below the node instead.
+// A filter's blocked row has no exit dot: its end box hangs below the node instead. Fallback lines
+// are ordinary rows (red, with an exit dot).
 
 export const PIXEL_TEXT = "Tells Meta when someone buys, so ads reach more buyers. Visitors don't pass through it.";
 
@@ -35,7 +36,7 @@ const bodyText = (n, catalogName) => {
   return isEnd(n) ? 'End: visitors are sent here' : 'Nothing comes after this yet';
 };
 
-export function NodeBox({ n, name, catalogName, rows, styles, height, add, selected, faded, problems, readOnly, onDown, onExitDown, onAddDown }) {
+export function NodeBox({ n, name, catalogName, rows, styles, height, add, addFallback, selected, faded, problems, readOnly, onDown, onExitDown, onAddDown, onAddFallbackDown }) {
   const k = kindOf(n);
   const level = worstLevel(problems);
   const hint = [k.type, name, catalogName !== name ? catalogName : null].filter(Boolean).join(' · ');
@@ -55,7 +56,7 @@ export function NodeBox({ n, name, catalogName, rows, styles, height, add, selec
       )}
       {rows.map((r, i) => {
         const text = r.label || 'No condition yet';
-        const shown = r.number ? `${r.number} · ${text}` : text;
+        const shown = (r.sub ? '↳ ' : '') + (r.number ? `${r.number} · ${text}` : text);
         const draggable = !readOnly && !!r.edgeId && r.kind !== 'blocked';
         return (
           <div key={r.key} className={`grow k-${r.kind}`} style={{ height: ROW_H }} title={r.detail ? `${shown} (${r.detail})` : shown}>
@@ -72,6 +73,11 @@ export function NodeBox({ n, name, catalogName, rows, styles, height, add, selec
       {add && (
         <div className="gadd" style={{ height: ADD_H }} onPointerDown={onAddDown} title="Drag to a node to add a connection">
           <span>+ add</span><span className="gexit drag add" />
+        </div>
+      )}
+      {addFallback && (
+        <div className="gadd fallback" style={{ height: ADD_H }} onPointerDown={onAddFallbackDown} title="Drag onto a box to send caught visitors there">
+          <span>+ fallback</span><span className="gexit drag add" />
         </div>
       )}
       {level && <span className={`gbadge ${level}`} title={problems.map((p) => p.text).join('\n')}>{problems.length}</span>}

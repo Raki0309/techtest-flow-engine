@@ -43,11 +43,11 @@ A graph is `{ entry, nodes, edges }`. `entry` is the id of the starting node.
 | `path` | a waypoint with an optional `when`, used to gate the edge into it |
 | `lander` | a page the visitor sees on the way, can chain into more landers |
 | `offer` | the destination, ends the walk |
-| `filter` | denies visitors who match its `when` |
+| `filter` | catches visitors who match its `when`: answers `404`, a `challenge`, or sends them down its fallback lines (`action: 'fallback'`) |
 | `pixel` | an attachment, never a waypoint, ignored when walking |
 | `matrix` | a lookup table authored as one node, expanded into ordinary nodes before walking |
 
-An edge is `{ from, to, weight, when }`.
+An edge is `{ id, from, to, weight, when, priority, caught }`. `id` and `priority` (the order of rows, lowest first) are optional; `caught: true` marks a filter's fallback line.
 
 ### How the walk chooses
 
@@ -58,15 +58,17 @@ At each node the engine looks at the outgoing edges:
 2. If none match, the edges with no `when` are used instead.
 3. A weighted random pick chooses among those. `rng` returns a number in [0, 1) so tests can pin it.
 4. A matching terminal filter always wins the pick. It is never given a weighted share.
-5. The walk stops at an `offer`, at a filter, or at a dead end (returns `null`).
+5. The walk stops at an `offer`, at a 404 or challenge filter, or at a dead end (returns `null`); a fallback catch continues down its fallback line.
 
-A filter with no outgoing edge is terminal: reaching it means the visitor matched. A filter with an
+A filter with no outgoing line other than fallback lines is terminal: reaching it means the visitor matched. A filter with an
 outgoing edge is chained: everyone reaches it, a match blocks, and a non-match continues down that
 edge. A filter can answer `404` or `challenge`, which carries a challenge config back for the caller.
+It can also answer `fallback`: the filter's fallback lines (`caught: true`), picked by the same rules as rows, and the walk continues; the result is `{ filtered: true, node_id, action: 'fallback', landers, offer }`. With no line that fits it answers `404`. Caller contract: if `filtered` and `action` isn't `'fallback'`, stop (404 or challenge); otherwise serve `offer` (with `landers`).
 
 `resolveGraph` takes an optional `onVisit(id, node)` callback, called once for every node actually
 reached, entry through the final node. It changes nothing about the walk, it just lets a caller
-(a debugger, a visualizer) see the path without re-implementing the walk itself.
+(a debugger, a visualizer) see the path without re-implementing the walk itself. `onEdge(edge)` does
+the same for every line taken.
 
 ### Conditions
 
@@ -110,7 +112,8 @@ import { compileGraph, resolveGraph, validateGraph } from './src/index.js';
 const error = validateGraph(authored);               // string or null
 const compiled = compileGraph(authored, refs);
 const result = resolveGraph(compiled, visitor, Math.random);
-// { landers: [...], offer: {...} }  or  { filtered: true, node_id, action, challenge }  or  null
+// { landers: [...], offer: {...} }  or  { filtered: true, node_id, action: '404' | 'challenge', challenge }
+// or { filtered: true, node_id, action: 'fallback', landers, offer }  or  null
 ```
 
 ## What is not here

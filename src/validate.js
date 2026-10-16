@@ -3,6 +3,7 @@
 
 import { matrixKeyCond } from './expand-matrix.js';
 import { CHALLENGE_TYPES } from './engine.js';
+import { upgradeFallbacks } from './upgrade.js';
 
 export { CHALLENGE_TYPES };
 
@@ -53,11 +54,12 @@ export function validateRuleConds(conds) {
   return null;
 }
 
-// A filter's action is "404" (default) or "challenge". The challenge config is only checked
-// when the action is "challenge"; one left on a 404 node is inert.
+// A filter's action is "404" (default), "challenge" or "fallback" (badFilterNodes checks it has
+// a fallback line). The challenge config is only checked when the action is "challenge"; one left
+// on another node is inert.
 export function badFilterChallenge(action, challenge) {
-  if (action != null && action !== '404' && action !== 'challenge') {
-    return `filter action must be "404" or "challenge" (got "${action}")`;
+  if (action != null && action !== '404' && action !== 'challenge' && action !== 'fallback') {
+    return `filter action must be "404", "challenge" or "fallback" (got "${action}")`;
   }
   if (action !== 'challenge') return null;
   if (!challenge || typeof challenge !== 'object') return 'filter action "challenge" needs a challenge config';
@@ -84,6 +86,10 @@ export function graphHasOffer(g) {
 
 export function badFilterNodes(g) {
   if (!g || !g.nodes) return null;
+  // a fallback line (caught: true) only means something leaving a filter
+  for (const [i, e] of (g.edges || []).entries()) {
+    if (e && e.caught && g.nodes[e.from]?.kind !== 'filter') return `edge "${e.id || i}": only a filter can have fallback lines`;
+  }
   const entries = Object.entries(g.nodes).filter(([, n]) => n && n.kind === 'filter');
   if (!entries.length) return null;
   for (const [nid, n] of entries) {
@@ -94,6 +100,15 @@ export function badFilterNodes(g) {
     if (empty) return `filter node "${id}" has no condition: it would 404 all traffic`;
     const badChallenge = badFilterChallenge(n.action, n.challenge);
     if (badChallenge) return `filter node "${id}": ${badChallenge}`;
+    // a line straight back to the filter would catch the same visitor forever
+    if ((g.edges || []).some((e) => e.caught && e.from === id && e.to === id)) return `filter node "${id}": its fallback line points back at itself`;
+    // a fallback with nowhere to go would quietly 404 the visitors it was meant to keep
+    if (n.action === 'fallback') {
+      const lines = (g.edges || []).filter((e) => e.caught && e.from === id && g.nodes[e.to] && g.nodes[e.to].kind !== 'pixel');
+      if (!lines.length) return `filter node "${id}": action "fallback" needs at least one fallback line`;
+      const blank = lines.find((e) => g.nodes[e.to].kind === 'offer' && !g.nodes[e.to].ref);
+      if (blank) return `filter node "${id}": its fallback line goes to offer node "${blank.to}", which has no offer picked`;
+    }
     if (!(g.edges || []).some((e) => e.to === id)) {
       return `filter node "${id}" is not connected: nothing routes into it, so it filters nothing`;
     }
@@ -147,7 +162,8 @@ export function badMatrixNodes(g) {
 }
 
 // Everything checked on save, in order. Returns an error string or null.
-export function validateGraph(g) {
+export function validateGraph(graph) {
+  const g = upgradeFallbacks(graph);
   const badFilter = badFilterNodes(g);
   if (badFilter) return badFilter;
   const badWhen = badInlineWhens(g);

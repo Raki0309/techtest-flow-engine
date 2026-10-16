@@ -10,6 +10,7 @@
 //   })
 
 import { expandMatrix } from './expand-matrix.js';
+import { upgradeFallbacks } from './upgrade.js';
 
 export function compileGraph(graph, { landers = {}, offers = {}, rules = {}, valueLists = {} } = {}) {
   // the engine evaluates plain arrays only, so a cond citing a value list gets the list inlined
@@ -27,7 +28,7 @@ export function compileGraph(graph, { landers = {}, offers = {}, rules = {}, val
     return ruleById[when.rule] || { logical: 'and', conds: [{ type: 'param', key: '__missing_rule__', op: 'exists' }] };
   };
 
-  const g = expandMatrix(graph);
+  const g = expandMatrix(upgradeFallbacks(graph));
   const nodes = {};
   for (const [nid, n] of Object.entries(g.nodes || {})) {
     const id = n.id || nid;
@@ -36,11 +37,12 @@ export function compileGraph(graph, { landers = {}, offers = {}, rules = {}, val
       source: landers[n.ref]?.source || null, ...(n.bind ? { bind: n.bind } : {}) };
     else if (n.kind === 'path') nodes[id] = { kind: 'path', when: compileWhen(n.when) };
     else if (n.kind === 'filter') nodes[id] = { kind: 'filter', when: compileWhen(n.when),
-      action: n.action === 'challenge' ? 'challenge' : '404',
+      action: n.action === 'challenge' || n.action === 'fallback' ? n.action : '404',
       challenge: n.action === 'challenge' ? (n.challenge || null) : null };
     else nodes[id] = { kind: n.kind };
   }
-  const edges = (g.edges || []).map((e) => ({ from: e.from, to: e.to, weight: e.weight || 1, when: compileWhen(e.when),
+  const edges = (g.edges || []).map((e) => ({ ...(e.id ? { id: e.id } : {}), from: e.from, to: e.to, weight: e.weight || 1, when: compileWhen(e.when),
+    ...(e.caught ? { caught: true } : {}),
     ...(Number.isFinite(e.priority) ? { priority: e.priority } : {}) }));
   return { entry: g.entry, nodes, edges };
 }

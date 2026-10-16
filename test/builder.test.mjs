@@ -2,11 +2,11 @@
 import { ok, done } from './helpers.mjs';
 import { readFileSync } from 'node:fs';
 import { describeWhen, describeCond, SIGNALS, isEmptyWhen } from '../flow-builder/src/describe.js';
-import { addRowEdge, retargetEdge, deleteEdge, setEdgeWhen, moveRow, renumberPriorities, setEdgeColor, setEdgeWeight, removeNode } from '../flow-builder/src/edit.js';
+import { addRowEdge, retargetEdge, deleteEdge, setEdgeWhen, moveRow, renumberPriorities, setEdgeColor, setEdgeWeight, removeNode, setFilterAction, addFallbackOffer, addFallbackLine } from '../flow-builder/src/edit.js';
 import { checkFlow, worstLevel } from '../flow-builder/src/checks.js';
 import { simulateVisit, parseParams, challengeShort, DEFAULT_VISITOR } from '../flow-builder/src/simulate.js';
-import { nodeRows, lineStyle, pixelLineStyle, effectiveWhen, isTerminalFilter, PALETTE, BLOCKED_RED, HIGHLIGHT } from '../flow-builder/src/rows.js';
-import { layoutGraph, placeMissing, nodeHeight, rowPortY, nodeFootprint, endBoxHeight, retargetAllowed, isEntryNode, toGraph, NODE_W, HEADER_H, ROW_H, ADD_H, END_W, END_DROP } from '../flow-builder/src/helpers.js';
+import { nodeRows, lineStyle, pixelLineStyle, effectiveWhen, isTerminalFilter, isCaught, fallbackLines, PALETTE, BLOCKED_RED, HIGHLIGHT } from '../flow-builder/src/rows.js';
+import { layoutGraph, placeMissing, nodeHeight, rowPortY, addPortY, nodeFootprint, canAddFallbackFrom, endBoxHeight, endBoxText, snapUp, retargetAllowed, isEntryNode, toGraph, dropCurve, NODE_W, HEADER_H, ROW_H, ADD_H, END_W, END_DROP } from '../flow-builder/src/helpers.js';
 import { boxName, problemLines } from '../flow-builder/src/names.js';
 
 // --- describe.js ---
@@ -221,7 +221,7 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
 {
   const CAT = {
     landers: [{ id: 'ld_quiz_a', name: 'Quiz lander A' }, { id: 'ld_quiz_b', name: 'Quiz lander B (variant)' }, { id: 'ld_review', name: 'Product review page' }, { id: 'ld_advertorial', name: 'Advertorial' }],
-    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
+    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_safe', name: 'Everflow #1450 — Safe offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
     pixels: [{ id: 'px_meta', name: 'Meta pixel' }],
     rules: [{ id: 'rl_reviewer', name: 'Known ad reviewer', logical: 'and', conds: [{ type: 'moderator' }] }],
   };
@@ -274,6 +274,7 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
   ok(sim({ country: 'BR', device: 'desktop' }).outcome === 'offer' && simulateVisit(RouteNoOtherwise, CAT, { ...DEFAULT_VISITOR, country: 'BR' }).outcome === 'dead_end', 'simulate: dead end reported');
   ok(simulateVisit(RouteNoOtherwise, CAT, { ...DEFAULT_VISITOR, country: 'BR' }).text === "Stops at 'Route': nowhere to go (dead end)", 'simulate: dead end text');
   ok(simulateVisit(gLoop, CAT, DEFAULT_VISITOR).outcome === 'dead_end', 'simulate: loop ends as dead end');
+  ok(simulateVisit(gLoop, CAT, DEFAULT_VISITOR).text === "Goes round in a loop at 'Route'", 'simulate: a loop is worded as a loop, at the first box reached twice', simulateVisit(gLoop, CAT, DEFAULT_VISITOR).text);
   ok(challengeShort({ type: 'click', timeout_ms: 8000 }) === 'click within 8s', 'simulate: challengeShort click');
   ok(challengeShort({ type: 'honeypot', timeout_ms: 8000 }) === 'hidden-button check', 'simulate: challengeShort honeypot');
   ok(challengeShort({ type: 'timing', timeout_ms: 3000 }) === 'wait 3s before clicking', 'simulate: challengeShort timing');
@@ -289,15 +290,21 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
   const sample = JSON.parse(readFileSync(new URL('../examples/checkpoint-flow.json', import.meta.url), 'utf8'));
   const SCAT = {
     landers: [{ id: 'ld_quiz_a', name: 'Quiz lander A' }, { id: 'ld_quiz_b', name: 'Quiz lander B (variant)' }, { id: 'ld_review', name: 'Product review page' }, { id: 'ld_advertorial', name: 'Advertorial' }],
-    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
+    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_safe', name: 'Everflow #1450 — Safe offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
     pixels: [{ id: 'px_meta', name: 'Meta pixel' }],
     rules: [{ id: 'rl_reviewer', name: 'Known ad reviewer', logical: 'and', conds: [{ type: 'moderator' }] }],
     valueLists: [],
   };
   ok(checkFlow(sample.graph, SCAT).count === 0, 'sample: no problems');
+  ok(!/\([^)]*\(/.test(sample.description) && sample.description.includes('a safe fallback offer instead of a 404'), 'sample: the description has no brackets inside brackets');
   ok(sample.graph.nodes.route_audience.kind === 'route', 'sample: uses a route node');
   const last = (v) => { const r = simulateVisit(sample.graph, SCAT, { ...DEFAULT_VISITOR, ...v }, 'fixed'); return r.nodes[r.nodes.length - 1]; };
   ok(last({}) === 'offer_main' && last({ country: 'DE', device: 'desktop' }) === 'offer_eu', 'sample: US phone ends on main offer, DE desktop on EU offer');
+  const sr = simulateVisit(sample.graph, SCAT, { ...DEFAULT_VISITOR, reviewer: true }, 'fixed');
+  ok(sr.outcome === 'fallback' && sr.text === "Caught at 'Block Reviewers' → Fallback offer" && sr.lines[0] === "Caught at 'Block Reviewers': Known ad reviewer", 'sample: a caught reviewer goes to the fallback offer', JSON.stringify([sr.outcome, sr.text, sr.lines]));
+  ok(simulateVisit(sample.graph, SCAT, { ...DEFAULT_VISITOR, bot: true }, 'fixed').text === "Blocked at 'Block Bots' → 404 page", 'sample: a bot still gets the 404');
+  const sc = simulateVisit(sample.graph, SCAT, { ...DEFAULT_VISITOR, vpn: true }, 'fixed');
+  ok(sc.lines[0] === "Challenge at 'Check VPN': Uses a VPN / datacenter" && sc.lines[1] === '→ click within 8s' && sc.lines[2] === sc.passText, 'sample: the challenge result reads in lines', JSON.stringify(sc.lines));
 }
 
 // --- canvas layout + geometry (helpers.js) ---
@@ -329,6 +336,7 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
   ok(NODE_W === 240 && HEADER_H === 40 && ROW_H === 34 && ADD_H === 20, 'geometry: constants');
   ok(nodeHeight(3, true) === 40 + 102 + 20 && nodeHeight(3, false) === 40 + 102, 'geometry: nodeHeight');
   ok(nodeHeight(0, false) === 40 + 34 && nodeHeight(0, true) === 40 + 34 + 20, 'geometry: a node with no rows keeps one row of body');
+  ok(addPortY({ y: 100 }, 2, 0) === 100 + 40 + 68 + 10 && addPortY({ y: 100 }, 2, 1) === 100 + 40 + 68 + 20 + 10 && addPortY({ y: 0 }, 0, 0) === 40 + 34 + 10, 'geometry: addPortY, the middle of "+ add" (0) and "+ fallback" (1), one row at least');
   ok(rowPortY({ x: 0, y: 100 }, 1) === 100 + 40 + 34 + 17 && rowPortY({ x: 5, y: 0 }, 0) === 57, 'geometry: rowPortY');
   // old flows saved without positions (review focus 1)
   const camp = structuredClone(campaign.graph); const campSnap = JSON.stringify(camp);
@@ -357,21 +365,34 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
   ok(nodeFootprint(FP, 'f', [], true) === 40 + 68 + 24 + 30 && nodeFootprint(FP, 'nope') === 0, 'footprint: readOnly has no + add, a missing node is 0');
   ok(endBoxHeight(FP.nodes.f) === 30 && endBoxHeight(FP.nodes.c) === 44 && endBoxHeight(FP.nodes.r) === 0 && END_DROP === 24 && END_W === 170, 'end box: sizes');
   // every end box (centred under its filter, END_DROP below) stays clear of every node
+  // (a filter with a valid fallback offer has no end box: its footprint is just its box)
+  const hasEndBox = (g, id) => g.nodes[id].kind === 'filter' && endBoxText(g, id) !== null;
+  const own = (g, id) => nodeFootprint(g, id) - (hasEndBox(g, id) ? END_DROP + endBoxHeight(g.nodes[id]) : 0);
   const boxesClear = (g) => {
     const ids = Object.keys(g.nodes);
-    const own = (id) => nodeFootprint(g, id) - (g.nodes[id].kind === 'filter' ? END_DROP + endBoxHeight(g.nodes[id]) : 0);
-    return ids.filter((id) => g.nodes[id].kind === 'filter').every((fid) => {
+    return ids.filter((id) => hasEndBox(g, id)).every((fid) => {
       const f = g.nodes[fid];
-      const b = { x: f.x + (NODE_W - END_W) / 2, y: f.y + own(fid) + END_DROP, w: END_W, h: endBoxHeight(f) };
+      const b = { x: f.x + (NODE_W - END_W) / 2, y: f.y + own(g, fid) + END_DROP, w: END_W, h: endBoxHeight(f) };
       return ids.every((id) => {
         const n = g.nodes[id];
-        return n.x >= b.x + b.w || n.x + NODE_W <= b.x || n.y >= b.y + b.h || n.y + own(id) <= b.y;
+        return n.x >= b.x + b.w || n.x + NODE_W <= b.x || n.y >= b.y + b.h || n.y + own(g, id) <= b.y;
       });
     });
+  };
+  // no two boxes overlap (a parked fallback offer included)
+  const boxesApart = (g) => {
+    const ids = Object.keys(g.nodes);
+    return ids.every((a, i) => ids.slice(i + 1).every((b) => {
+      const p = g.nodes[a], q = g.nodes[b];
+      return p.x >= q.x + NODE_W || p.x + NODE_W <= q.x || p.y >= q.y + own(g, b) || p.y + own(g, a) <= q.y;
+    }));
   };
   ok(boxesClear(sample.graph), 'end box: the stored sample has room under every filter');
   const arranged = structuredClone(sample.graph); layoutGraph(arranged.nodes, arranged.edges, (id) => nodeFootprint(arranged, id));
   ok(boxesClear(arranged), 'end box: Arrange with nodeFootprint keeps every end box clear');
+  ok(!!sample.graph.nodes.offer_fallback && boxesApart(sample.graph), 'sample: the fallback box overlaps nothing');
+  const mainBottom = Math.max(...Object.keys(arranged.nodes).filter((id) => id !== 'offer_fallback').map((id) => arranged.nodes[id].y + own(arranged, id)));
+  ok(arranged.nodes.offer_fallback.y >= mainBottom && boxesApart(arranged), 'arrange: offer_fallback is in the lane (below every main box) and overlaps nothing', JSON.stringify([arranged.nodes.offer_fallback.y, mainBottom]));
   const stack = { entry: 'entry', nodes: { entry: { id: 'entry', kind: 'entry' }, f: { id: 'f', kind: 'filter', when: BOT }, g: { id: 'g', kind: 'filter', when: BOT, action: 'challenge' }, o: { id: 'o', kind: 'offer' } },
     edges: [E('k1', 'entry', 'f'), E('k2', 'entry', 'g'), E('k3', 'entry', 'o')] };
   layoutGraph(stack.nodes, stack.edges, (id) => nodeFootprint(stack, id));
@@ -466,7 +487,7 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
 {
   const FCAT = {
     landers: [{ id: 'ld_quiz_a', name: 'Quiz lander A' }, { id: 'ld_quiz_b', name: 'Quiz lander B (variant)' }, { id: 'ld_review', name: 'Product review page' }, { id: 'ld_advertorial', name: 'Advertorial' }],
-    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
+    offers: [{ id: 'of_main', name: 'Everflow #1442 — Main offer' }, { id: 'of_backup', name: 'Everflow #1443 — Backup offer' }, { id: 'of_safe', name: 'Everflow #1450 — Safe offer' }, { id: 'of_eu', name: 'Custom network — EU offer' }],
     pixels: [{ id: 'px_meta', name: 'Meta pixel' }],
     rules: [{ id: 'rl_reviewer', name: 'Known ad reviewer', logical: 'and', conds: [{ type: 'moderator' }] }],
   };
@@ -534,6 +555,214 @@ ok(typeof checkFlow(gLoop, CAT).count === 'number', 'checks: a loop terminates')
   const gs = checkFlow(ghostSplit, CAT);
   ok(has(gs, 's', GHOST, 'warning') && !has(gs, 'entry', GHOST, 'warning'), 'fix 7: only the box the line leaves from is flagged');
   ok(!has(checkFlow(gNoOtherwise, CAT), 'r', GHOST, 'warning') && checkFlow(sample.graph, FCAT).count === 0, 'fix 7: flows without such a line are not flagged');
+}
+
+// --- fallback lines ---
+{
+  // rows, footprint, layout (rows.js + helpers.js)
+  const L = (id, from, to, x = {}) => E(id, from, to, { caught: true, ...x });
+  const REVW = { conds: [{ type: 'moderator' }] };
+  const nF = (x = {}) => ({ id: 'f', kind: 'filter', when: REVW, action: 'fallback', ...x });
+  const nFb = { id: 'fb', kind: 'offer', ref: 'of_main', note: 'Fallback offer' }, nPg = { id: 'pg', kind: 'lander', ref: 'lp_a', note: 'Review page' };
+  const R1 = G([nEntry, nF(), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb')]);
+  const r1 = nodeRows(R1, 'f');
+  ok(r1.length === 2 && r1[0].kind === 'caught' && r1[0].label === 'Is an ad reviewer' && r1[0].detail === '→ Fallback offer' && r1[0].edgeId === 'c' && !r1[0].sub && r1[1].label === 'Passes', 'rows: one unconditional fallback line is merged into the caught row, with the box named');
+  const R2 = G([nEntry, nF(), nOffer, nFb, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c1', 'f', 'fb', { when: { country: ['GB'] }, priority: 1 }), L('c2', 'f', 'pg')]);
+  const r2 = nodeRows(R2, 'f');
+  ok(r2.map((r) => r.kind).join() === 'blocked,caught,caught,next' && r2[0].edgeId === undefined && r2[1].sub && r2[1].number === 1 && r2[1].label === 'Country is GB' && r2[1].detail === '→ Fallback offer' && r2[2].label === 'Otherwise' && r2[2].detail === '→ Review page', 'rows: several fallback lines get their own rows under the caught row');
+  ok(nodeRows(G([nEntry, nF(), nOffer], [E('a', 'entry', 'f'), E('p', 'f', 'o')]), 'f')[0].detail === 'no fallback offer yet', 'rows: a fallback filter with no line says so');
+  ok(nodeRows({ ...R1, nodes: { ...R1.nodes, f: nF({ action: '404' }) } }, 'f').map((r) => r.kind).join() === 'blocked,next', 'rows: fallback lines on a 404 filter are not rows');
+  const TF = G([nEntry, nF(), nFb], [E('a', 'entry', 'f'), L('c', 'f', 'fb')]);
+  ok(isTerminalFilter(TF, 'f') && nodeRows(TF, 'f').map((r) => r.kind).join() === 'caught,only', 'rows: a filter with only fallback lines is terminal');
+  ok(nodeRows(R1, 'f', [], (n) => `#${n.id}`)[0].detail === '→ #fb' && isCaught(R1.edges[2]) && !isCaught(R1.edges[1]) && fallbackLines(R2, 'f').length === 2, 'rows: nameOf names the target; isCaught / fallbackLines');
+  const ls = lineStyle({ style: 'caught' });
+  ok(ls.color === BLOCKED_RED && ls.width === 2 && ls.dash === null, 'rows: fallback lines are solid red');
+  const NR = G([nEntry, { id: 'r', kind: 'route' }, nOffer, nFb], [E('a', 'entry', 'r'), E('n', 'r', 'o'), L('cx', 'r', 'fb')]);
+  ok(nodeRows(NR, 'r').length === 1 && !nodeRows(NR, 'r').some((r) => r.edgeId === 'cx'), 'rows: a caught line on a non-filter box is not a row');
+  ok(endBoxHeight({ kind: 'filter', action: 'fallback' }) === 30, 'end box: a fallback filter without a box shows the one-line 404 box');
+  const CHB = { type: 'click', timeout_ms: 8000, on_fail: '404' };
+  const ET = (x, lines = []) => G([nEntry, nF(x), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o'), ...lines]);
+  ok(JSON.stringify(endBoxText(ET({ action: '404' }), 'f')) === JSON.stringify(['404 page · nothing recorded'])
+    && JSON.stringify(endBoxText(ET({ action: 'challenge', challenge: CHB }), 'f')) === JSON.stringify(['Challenge · click within 8s', 'pass → continues · fail → 404'])
+    && JSON.stringify(endBoxText(ET({}), 'f')) === JSON.stringify(['404 page · no fallback offer yet'])
+    && endBoxText(ET({}, [L('c', 'f', 'fb')]), 'f') === null && endBoxText(ET({}), 'o') === null, 'endBoxText: 404, challenge, no line yet, none with lines, none for other boxes');
+  ok(nodeFootprint(ET({}, [L('c', 'f', 'fb')]), 'f') === 40 + 2 * 34 + 20 + 20 && nodeFootprint(ET({}), 'f') === 40 + 2 * 34 + 20 + 20 + 24 + 30, 'footprint: fallback lines reserve no end box, none yet does (both have the "+ fallback" strip)');
+  ok(snapUp(241) === 260 && snapUp(240) === 240 && snapUp(0) === 0, 'snapUp: next 20px grid line');
+  // lane: entry → f (Passes → o); f's fallback line → fb; a second main box m under o's column
+  const LN = G([nEntry, nF(), nOffer, nFb, { id: 'm', kind: 'lander', ref: 'lp_a' }], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb'), E('q', 'entry', 'm'), E('r', 'm', 'o')]);
+  const LL = structuredClone(LN.nodes); layoutGraph(LL, LN.edges, (id) => nodeFootprint(LN, id));
+  const mainBottom = Math.max(...['entry', 'f', 'o', 'm'].map((id) => LL[id].y + nodeFootprint(LN, id)));
+  ok(LL.fb.x === 40 + 2 * 300 && LL.fb.y === mainBottom + 80 && LL.o.y < LL.fb.y, 'layout: a fallback-only box goes to the lane under the main flow, one column after its filter', JSON.stringify({ fb: [LL.fb.x, LL.fb.y], mainBottom }));
+  // a box a fallback line AND a later route's Otherwise reach stacks in the route's row order, not first
+  const LR = G([nEntry, nF(), { id: 'r', kind: 'route' }, { id: 'a', kind: 'lander', ref: 'lp_a' }, { id: 'x', kind: 'lander', ref: 'lp_a' }, nOffer],
+    [E('a1', 'entry', 'f'), E('a2', 'f', 'r'), L('c', 'f', 'x'), E('r1', 'r', 'a', { when: { country: ['US'] }, priority: 1 }), E('r2', 'r', 'x'), E('a3', 'a', 'o'), E('a4', 'x', 'o')]);
+  const LRL = structuredClone(LR.nodes); layoutGraph(LRL, LR.edges, (id) => nodeFootprint(LR, id));
+  ok(LRL.a.x === LRL.x.x && LRL.a.y < LRL.x.y, 'layout: a fallback line does not reorder the main flow (the route rows come first)', JSON.stringify([LRL.a, LRL.x]));
+  const LB = { ...LN, edges: [...LN.edges, E('s', 'm', 'fb')] };
+  const LBB = structuredClone(LB.nodes); layoutGraph(LBB, LB.edges, (id) => nodeFootprint(LB, id));
+  ok(LBB.fb.y < mainBottom, 'layout: a box reached by a normal line too stays in the main flow');
+  ok(retargetAllowed(G([nEntry, nF(), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb')]), 'c', 'o')
+    && !retargetAllowed(G([nEntry, nF(), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o'), E('p2', 'f', 'fb')]), 'p2', 'o'), 'retargetAllowed: a fallback line may join a Passes target; duplicates refused per side');
+  const TG = toGraph({ graph: { entry: 'entry', nodes: { entry: { ...nEntry, x: 40, y: 40 }, f: { ...nF({ fallback_to: 'fb' }), x: 340, y: 40 }, fb: { ...nFb, x: 340, y: 300 } }, edges: [E('a', 'entry', 'f')] } });
+  ok(!('fallback_to' in TG.nodes.f) && TG.edges.some((e) => e.caught && e.from === 'f' && e.to === 'fb'), 'toGraph: a v1 flow is upgraded to a fallback line');
+  ok(dropCurve({ x: 0, y: 0 }, { x: 100, y: 100 }) === 'M 0 0 C 0 50, 50 100, 100 100' && dropCurve({ x: 0, y: 0 }, { x: 10, y: 10 }) === 'M 0 0 C 0 40, -30 10, 10 10',
+    'dropCurve: the pixel-line curve (leaves downwards, arrives horizontally)');
+  // edits (edit.js)
+  const PS = G([nEntry, { ...nF(), x: 340, y: 40 }, nOffer, nFb, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o', { when: { country: ['US'] }, priority: 1 }), L('c1', 'f', 'fb', { when: { country: ['GB'] }, priority: 1 })]);
+  const PS2 = { ...PS, edges: [...PS.edges, L('c2', 'f', 'pg')] };   // two fallback lines (the builder adds one per filter, but the engine and old flows may have several)
+  const ps2 = setEdgeWhen(PS2, 'c2', { country: ['FR'] });
+  const pr = (g, id) => g.edges.find((e) => e.id === id).priority;
+  ok(pr(ps2, 'c2') === 2 && pr(ps2, 'p') === 1, 'edit: fallback lines are numbered among themselves');
+  const ps3 = moveRow(ps2, 'c2', -1);
+  ok(pr(ps3, 'c2') === 1 && pr(ps3, 'c1') === 2 && pr(ps3, 'p') === 1 && pr(deleteEdge(ps3, 'c2'), 'c1') === 1, 'edit: moving and deleting renumber one side only');
+  const added = addFallbackLine(G([nEntry, nF({ action: 'challenge', challenge: CHB }), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o')]), 'f', 'o', 'cx');
+  ok(added.edges.find((e) => e.id === 'cx').caught === true && added.nodes.f.action === 'fallback' && !('challenge' in added.nodes.f), 'edit: addFallbackLine adds a caught line (even to the Passes box) and makes fallback the outcome');
+  ok(['entry', 'f', 'gone'].every((to) => addFallbackLine(R1, 'f', to) === R1) && addFallbackLine(R1, 'f', 'fb') === R1, 'edit: no fallback line to the entry, itself, a missing box, or the box it already goes to');
+  ok(addRowEdge(R1, 'f', 'fb').edges.length === R1.edges.length + 1, 'edit: "+ add" may add a Passes line to a box that has a fallback line');
+  // one fallback offer per filter: a new line moves the old one
+  const mv = addFallbackLine(R1, 'f', 'o', 'c9');
+  ok(mv.edges.filter((e) => e.caught).length === 1 && mv.edges.find((e) => e.caught).id === 'c9' && mv.edges.find((e) => e.caught).to === 'o' && mv.nodes.fb, 'edit: a new fallback line replaces the old one; the old box stays');
+  ok(addFallbackLine(R1, 'f', 'fb') === R1, 'edit: re-connecting to the same box changes nothing');
+  const NO2m = addFallbackOffer(R1, 'f', 'n2');
+  ok(NO2m.edges.filter((e) => e.caught).map((e) => e.to).join() === 'n2' && NO2m.nodes.fb && NO2m.nodes.n2.note === 'Fallback offer', 'edit: "+ New fallback offer" moves the line to the new box');
+  // the red "+ fallback" strip
+  ok(canAddFallbackFrom(nF()) && !canAddFallbackFrom(nF({ action: '404' })) && !canAddFallbackFrom(nOffer), 'helpers: only a filter set to fallback gets the "+ fallback" strip');
+  ok(nodeFootprint(R1, 'f') === 40 + 2 * 34 + 20 + 20 && nodeFootprint(R1, 'f', [], true) === 40 + 2 * 34, 'helpers: the "+ fallback" strip adds one strip of height (not when read-only)');
+  // toggling: lines go, boxes stay, room for the end box (snapped)
+  const TO = G([nEntry, { ...nF(), x: 340, y: 40 }, { ...nOffer, x: 640, y: 40 }, { ...nFb, x: 340, y: 208 }, { id: 'u', kind: 'lander', ref: 'lp_a', x: 340, y: 322 }],
+    [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb'), E('k', 'u', 'o')]);
+  const TOsnap = JSON.stringify(TO);
+  const t404 = setFilterAction(TO, 'f', '404');
+  ok(!t404.edges.some((e) => e.caught) && t404.nodes.fb && t404.nodes.fb.y === snapUp(168 + 24 + 30 + 20) && t404.nodes.u.y - t404.nodes.fb.y === 322 - 208, 'edit: back to 404 removes fallback lines, keeps boxes, makes snapped room', JSON.stringify([t404.nodes.fb.y, t404.nodes.u.y]));
+  ok(setFilterAction(TO, 'f', 'fallback').edges.some((e) => e.caught) && setFilterAction(TO, 'f', 'challenge').nodes.f.challenge.type === 'click', 'edit: fallback keeps the lines; challenge gets its default');
+  // "+ New fallback offer": one column right, first free grid slot from the filter's top
+  const NO1 = addFallbackOffer(TO, 'f', 'n1');
+  ok(NO1.nodes.n1.x === 640 && NO1.nodes.n1.y === snapUp(40 + 74 + 40) && NO1.nodes.n1.note === 'Fallback offer' && NO1.nodes.n1.ref === '' && NO1.edges.some((e) => e.caught && e.to === 'n1'), 'edit: a new fallback offer goes one column right, below what is there, on the grid, with a fallback line', JSON.stringify(NO1.nodes.n1));
+  // the fallback box sits elsewhere and another box sits right under the filter: deleting the box brings the end box back over it
+  const FAR2 = { ...TO, nodes: { ...TO.nodes, fb: { ...TO.nodes.fb, x: 940, y: 40 }, u: { ...TO.nodes.u, y: 208 } } };
+  const gone = removeNode(FAR2, 'fb');
+  ok(!gone.edges.some((e) => e.caught) && gone.nodes.f.action === 'fallback' && gone.nodes.u.y === snapUp(168 + 20 + 24 + 30 + 20), 'edit: deleting the only fallback box leaves "no line yet" and makes room for its end box', JSON.stringify(gone.nodes.u));
+  // removing the last fallback line (the panel's x) brings the 404 end box back: make room for it
+  const rmv = deleteEdge(FAR2, 'c');
+  ok(!rmv.edges.some((e) => e.caught) && rmv.nodes.f.action === 'fallback' && rmv.nodes.u.y === snapUp(168 + 20 + 24 + 30 + 20), 'edit: deleteEdge of the last fallback line makes room for the 404 box that comes back', JSON.stringify(rmv.nodes.u));
+  // finding 1: a Passes-line or entry-line delete moves nothing
+  ok(deleteEdge(FAR2, 'p').nodes.u.y === 208 && deleteEdge(FAR2, 'a').nodes.u.y === 208, 'edit: deleting a Passes or entry line moves nothing');
+  // review round 1
+  const PXG = { ...R1, nodes: { ...R1.nodes, px: { id: 'px', kind: 'pixel' } } };
+  ok(addFallbackLine(PXG, 'f', 'px') === PXG, 'edit: no fallback line to a pixel (it would be invisible and unnumbered)');
+  const CHM = { type: 'motion', timeout_ms: 5000, on_fail: '404' };
+  const TOch = { ...TO, nodes: { ...TO.nodes, f: { ...TO.nodes.f, action: 'challenge', challenge: CHM } } };
+  ok(!('challenge' in setFilterAction(TOch, 'f', 'fallback').nodes.f) && setFilterAction(TOch, 'f', 'challenge').nodes.f.challenge.type === 'motion', 'edit: fallback drops the challenge config; choosing challenge again keeps an existing one');
+  ok(setFilterAction(TO, 'f', 'challenge').nodes.fb.y === snapUp(168 + 24 + 44 + 20), 'edit: the challenge end box (44px) makes its own, taller room');
+  const ROOMY = { ...FAR2, nodes: { ...FAR2.nodes, u: { ...FAR2.nodes.u, y: 300 } } };
+  ok(setFilterAction(ROOMY, 'f', '404').nodes.u.y === 300, 'edit: a box already below the end box stays put');
+  const NO2 = addFallbackOffer(NO1, 'f', 'n2');
+  ok(NO2.nodes.n2.y === snapUp(NO1.nodes.n1.y + 74 + 40) && NO2.nodes.n2.y % 20 === 0 && NO2.nodes.n2.x === NO1.nodes.n1.x, 'edit: "+ New fallback offer" twice puts the second box below the first, on the grid', JSON.stringify([NO1.nodes.n1.y, NO2.nodes.n2.y]));
+  const TWO = { ...FAR2, nodes: { ...FAR2.nodes, pg: { ...nPg, x: 940, y: 400 } }, edges: [...FAR2.edges, L('c2', 'f', 'pg')] };
+  const keepOne = removeNode(TWO, 'fb');
+  ok(keepOne.edges.some((e) => e.id === 'c2') && endBoxText(keepOne, 'f') === null && keepOne.nodes.u.y === 208, 'edit: deleting one of two fallback boxes shows no end box and moves nothing');
+  ok(deleteEdge(TWO, 'c2').nodes.u.y === 208 && deleteEdge(FAR2, 'nope') === FAR2, 'edit: removing one of two lines moves nothing; a missing line changes nothing');
+  ok(pr(deleteEdge(ps2, 'p'), 'c1') === 1 && pr(deleteEdge(ps2, 'p'), 'c2') === 2 && pr(setEdgeWhen(ps2, 'p', { country: ['FR'] }), 'c1') === 1 && pr(setEdgeWhen(ps2, 'p', { country: ['FR'] }), 'c2') === 2, 'edit: editing a Passes line leaves the fallback priorities alone');
+  ok(JSON.stringify(TO) === TOsnap, 'edit: fallback edits never mutate the input');
+
+  // problems + test a visitor (checks.js, simulate.js)
+  const T = {
+    noLine: 'No fallback offer yet: caught visitors get a 404 for now',
+    noElse: "No 'Otherwise' among the fallback offers: caught visitors who match none get a 404",
+    unused: "This filter's fallback offer isn't used: 'What happens to them?' isn't set to 'Send to a fallback offer'",
+    notF: 'Only a filter can have a fallback offer',
+    loop: "This filter's fallback leads back to it (a loop)",
+    over: 'Overlaps another box: press Arrange or move it',
+  };
+  const ck = (g) => checkFlow(g, CAT);
+  ok(has(ck(G([nEntry, nF(), nOffer], [E('a', 'entry', 'f'), E('p', 'f', 'o')])), 'f', T.noLine, 'error') && !has(ck(R1), 'f', T.noLine, 'error'), 'checks: a fallback filter needs a line');
+  ok(has(ck(G([nEntry, nF(), nOffer, nFb], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb', { when: { country: ['GB'] }, priority: 1 })])), 'f', T.noElse, 'warning') && !has(ck(R2), 'f', T.noElse, 'warning'), 'checks: conditional fallback lines want an Otherwise');
+  ok(has(ck({ ...R1, nodes: { ...R1.nodes, f: nF({ action: '404' }) } }), 'f', T.unused, 'warning'), 'checks: fallback lines on a 404 filter are flagged as unused');
+  ok(has(ck(G([nEntry, { id: 'r', kind: 'route' }, nOffer], [E('a', 'entry', 'r'), E('b', 'r', 'o'), L('c', 'r', 'o')])), 'r', T.notF, 'warning'), 'checks: only filters have fallback lines');
+  ok(has(ck(G([nEntry, nF(), nOffer, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'pg'), E('b', 'pg', 'f')])), 'f', T.loop, 'warning'), 'checks: a fallback line that leads back is a loop');
+  const OV = G([{ ...nEntry, x: 40, y: 40 }, { ...nOffer, x: 60, y: 60 }, { id: 'o2', kind: 'offer', ref: 'of_main', x: 600, y: 600 }], [E('a', 'entry', 'o'), E('b', 'entry', 'o2')]);
+  ok(has(ck(OV), 'entry', T.over, 'warning') && has(ck(OV), 'o', T.over, 'warning') && !has(ck(OV), 'o2', T.over, 'warning'), 'checks: overlapping boxes are flagged on both, others not');
+  ok(!has(ck(R1), 'fb', 'Nothing leads here, so it never runs', 'warning'), 'checks: a box reached by a fallback line is reached');
+  // simulate
+  const J = (x) => JSON.stringify(x);
+  const rv = { ...DEFAULT_VISITOR, reviewer: true };
+  const R2n = { ...R2, nodes: { ...R2.nodes, f: nF({ note: 'Block Reviewers' }), o2: { id: 'o2', kind: 'offer', ref: 'of_main', note: 'Backup offer' } }, edges: [...R2.edges, E('q', 'pg', 'o2')] };
+  const sUS = simulateVisit(R2n, CAT, rv, 'fixed');
+  ok(sUS.outcome === 'fallback' && sUS.text === "Caught at 'Block Reviewers' → Review page → Backup offer" && J(sUS.edges) === J(['a', 'c2', 'q']) && !('links' in sUS), 'simulate: a caught visitor follows the fallback line; edges are the lines taken', J([sUS.text, sUS.edges]));
+  ok(J(sUS.lines) === J(["Caught at 'Block Reviewers': Is an ad reviewer", '→ Review page → Backup offer', 'If not caught here: → Main offer']), 'simulate: fallback lines read catch, path, and what happens otherwise', J(sUS.lines));
+  ok(simulateVisit(R2n, CAT, { ...rv, country: 'GB' }, 'fixed').text === "Caught at 'Block Reviewers' → Fallback offer", 'simulate: GB takes fallback line 1');
+  const R2d = { ...R2n, edges: R2n.edges.filter((e) => e.id !== 'q') };
+  ok(J(simulateVisit(R2d, CAT, rv, 'fixed').lines.slice(0, 2)) === J(["Caught at 'Block Reviewers': Is an ad reviewer", "Stops at 'Review page': nowhere to go (dead end)"]), 'simulate: a fallback into a dead end says so after the catch');
+  const R2b = { ...R2n, nodes: { ...R2n.nodes, b2: { id: 'b2', kind: 'filter', note: 'Block Bots', when: { conds: [{ type: 'bot_ua' }] } } }, edges: [...R2n.edges.filter((e) => e.id !== 'q'), E('q1', 'pg', 'b2'), E('q2', 'b2', 'o2')] };
+  ok(J(simulateVisit(R2b, CAT, { ...rv, bot: true }, 'fixed').lines.slice(0, 3)) === J(["Caught at 'Block Reviewers': Is an ad reviewer", "Blocked at 'Block Bots': Is a bot", '→ 404 page']), 'simulate: a second catch after a fallback gets its own lines');
+  const SAME2 = G([nEntry, nF({ note: 'Block Reviewers' }), nFb], [E('e1', 'entry', 'f'), E('e2', 'f', 'fb'), L('c', 'f', 'fb')]);
+  ok(J(simulateVisit(SAME2, CAT, rv, 'fixed').edges) === J(['e1', 'c']), 'simulate: the fallback line is lit, never the Passes line to the same box');
+  ok(simulateVisit(R2n, CAT, DEFAULT_VISITOR, 'fixed').outcome === 'offer', 'simulate: a visitor who is not caught is unaffected');
+  const noWhy = simulateVisit(G([nEntry, { id: 'f', kind: 'filter', note: 'Empty', action: '404' }, nOffer], [E('e1', 'entry', 'f'), E('e2', 'f', 'o')]), CAT, rv, 'fixed');
+  ok(noWhy.lines?.[0] === "Blocked at 'Empty'", 'simulate: a filter without a condition leaves out the why', J(noWhy.lines));
+
+  // --- leftovers: engine and format consistency ---
+  ok(isCaught({ caught: 1 }) && isCaught({ caught: 'yes' }) && !isCaught({ caught: 0 }) && !isCaught({}) && !isCaught(null) && !isCaught(undefined), 'isCaught: any truthy caught counts, like the engine');
+  const R1one = { ...R1, edges: R1.edges.map((e) => (e.id === 'c' ? { ...e, caught: 1 } : e)) };
+  ok(fallbackLines(R1one, 'f').length === 1 && nodeRows(R1one, 'f')[0].detail === '→ Fallback offer', 'rows: a hand-edited "caught": 1 reads as a fallback line');
+  const R1off = { ...R1, nodes: { ...R1.nodes, f: nF({ action: '404' }) } };
+  const reOn = addFallbackLine(R1off, 'f', 'fb');
+  ok(reOn.nodes.f.action === 'fallback' && reOn.edges.filter((e) => e.caught).length === 1 && JSON.stringify(reOn.edges) === JSON.stringify(R1off.edges), 'edit: re-connecting the same box on a 404 filter makes fallback its outcome, lines unchanged');
+
+  // --- leftovers: test a visitor on a loop (the fallback page leads back to the filter) ---
+  const LPg = G([nEntry, nF({ note: 'Block Reviewers' }), nOffer, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'pg'), E('b', 'pg', 'f')]);
+  const lp = simulateVisit(LPg, CAT, rv, 'fixed');
+  ok(J(lp.lines) === J(["Caught at 'Block Reviewers': Is an ad reviewer", "Goes round in a loop at 'Block Reviewers'", 'If not caught here: → Main offer']), 'simulate: a loop lists its catch once and says it is a loop', J(lp.lines));
+  ok(lp.outcome === 'dead_end' && lp.text === "Goes round in a loop at 'Block Reviewers'" && !('firstCatch' in lp), 'simulate: the loop is the result text; nothing internal leaks out', J([lp.outcome, lp.text]));
+
+  // --- leftovers: layout gaps (the lane under the main flow) ---
+  // entry → f1, f2 (both Passes → o); f1 caught → fa, f2 caught → fb (column 2, both in the lane);
+  // fa → pg → o2: a lane chain (pg and o2 are reached only through f1's fallback line)
+  const nF2 = (id) => ({ ...nF(), id });
+  const LG = (first) => G([nEntry, nF2('f1'), nF2('f2'), nOffer, { id: 'fa', kind: 'lander', ref: 'lp_a' }, { id: 'fb', kind: 'offer', ref: 'of_main' }, nPg, { id: 'o2', kind: 'offer', ref: 'of_main' }],
+    [...(first === 'f1' ? [E('e1', 'entry', 'f1'), E('e2', 'entry', 'f2')] : [E('e2', 'entry', 'f2'), E('e1', 'entry', 'f1')]),
+      E('p1', 'f1', 'o'), E('p2', 'f2', 'o'), L('c1', 'f1', 'fa'), L('c2', 'f2', 'fb'), E('q1', 'fa', 'pg'), E('q2', 'pg', 'o2')]);
+  const lay = (g) => { const n = structuredClone(g.nodes); layoutGraph(n, g.edges, (id) => nodeFootprint(g, id)); return n; };
+  const L1 = lay(LG('f1')), L2 = lay(LG('f2'));
+  const laneTop = (g, n) => Math.max(...['entry', 'f1', 'f2', 'o'].map((id) => n[id].y + nodeFootprint(g, id))) + 80;
+  ok(L1.fa.x === 640 && L1.fb.x === 640 && L1.fa.y === laneTop(LG('f1'), L1) && L1.fb.y === L1.fa.y + nodeFootprint(LG('f1'), 'fa') + 40, 'layout: two lane boxes in one column stack from the lane top', J([L1.fa, L1.fb]));
+  ok(L2.fb.y === laneTop(LG('f2'), L2) && L2.fa.y > L2.fb.y, 'layout: inside the lane, boxes follow the reading order of their filters', J([L2.fa, L2.fb]));
+  ok(L1.pg.x === L1.fa.x + 300 && L1.o2.x === L1.pg.x + 300 && L1.pg.y === laneTop(LG('f1'), L1) && L1.o2.y === L1.pg.y, 'layout: a lane chain continues column by column in the lane', J([L1.pg, L1.o2]));
+  // the sample: the lane starts 80px under the lowest main box, end boxes included
+  const sampleG = JSON.parse(readFileSync(new URL('../examples/checkpoint-flow.json', import.meta.url), 'utf8')).graph;
+  const SA = lay(sampleG);
+  const sampleMain = Object.keys(SA).filter((id) => id !== 'offer_fallback' && SA[id].kind !== 'pixel');
+  ok(SA.offer_fallback.y === Math.max(...sampleMain.map((id) => SA[id].y + nodeFootprint(sampleG, id))) + 80, 'layout: the sample lane is the lowest main footprint + 80', J(SA.offer_fallback));
+
+  // --- leftovers: rows gaps ---
+  const nT = { id: 't', kind: 'filter', note: 'Block bots', when: BOT };
+  const RT = nodeRows(G([nEntry, nF(), nOffer, nT], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 't')]), 'f');
+  ok(RT[0].kind === 'blocked' && RT[1].kind === 'caught' && RT[1].label === 'Is a bot' && RT[1].detail === '→ Block bots', 'rows: a fallback line into a terminal filter takes its condition and names it', J(RT));
+  const RS = nodeRows(G([nEntry, nF(), nOffer, nFb, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c1', 'f', 'fb'), L('c2', 'f', 'pg', { weight: 3 })]), 'f');
+  ok(J(RS.map((r) => [r.kind, r.label, r.share, r.detail])) === J([['blocked', 'Is an ad reviewer', undefined, undefined], ['caught', '25%', 25, '→ Fallback offer'], ['caught', '75%', 75, '→ Review page'], ['next', 'Passes', undefined, undefined]]), 'rows: unconditional fallback lines split by share', J(RS));
+  const nP = { id: 'pa', kind: 'path', when: { country: ['GB'] } };
+  const RP = nodeRows(G([nEntry, nF(), nOffer, nP], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'pa')]), 'f');
+  ok(RP.length === 3 && RP[0].kind === 'blocked' && RP[1].label === 'Country is GB' && RP[1].detail === '→ Path', 'rows: one fallback line into a path takes the path\'s condition, so it is not merged into the caught row', J(RP));
+
+  // --- leftovers: edits gaps ---
+  ok(addFallbackOffer(R1, 'o', 'n9') === R1 && addFallbackOffer(R1, 'gone', 'n9') === R1, 'edit: "+ New fallback offer" is refused for a box that is not a filter');
+  const MU = G([nEntry, { ...nF(), x: 340, y: 40 }, { ...nOffer, x: 640, y: 40 }, { ...nFb, x: 340, y: 300 }], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'fb')]);
+  const MUsnap = J(MU);
+  [addFallbackLine(MU, 'f', 'o', 'x1'), addFallbackLine(MU, 'f', 'fb'), addFallbackOffer(MU, 'f', 'x2'), setFilterAction(MU, 'f', '404'), setFilterAction(MU, 'f', 'challenge'), deleteEdge(MU, 'c'), removeNode(MU, 'fb')];
+  ok(J(MU) === MUsnap, 'edit: the fallback edits leave their input exactly as it was before the call');
+
+  // --- leftovers: checks and test-a-visitor gaps ---
+  const TWOC = G([nEntry, nF(), nOffer, nFb, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c1', 'f', 'fb', { when: { country: ['GB'] } }), L('c2', 'f', 'pg', { when: { country: ['FR'] } }), E('q', 'pg', 'o')]);
+  ok(has(ck(TWOC), 'f', 'Several rows could match the same visitor: set priorities so the order is clear', 'warning'), 'checks: two unnumbered conditional fallback lines want priorities');
+  ok(has(ck(G([nEntry, nPg, nOffer], [E('a', 'entry', 'pg'), L('c', 'pg', 'o')])), 'pg', 'Visitors stop here: connect what comes after this page', 'error'), 'checks: a caught line is not an exit for a page');
+  const CHF = G([nEntry, nF({ note: 'Block Reviewers' }), nOffer, nPg, { id: 'ch', kind: 'filter', note: 'Check VPN', when: { conds: [{ type: 'datacenter' }] }, action: 'challenge', challenge: { type: 'click', timeout_ms: 8000, on_fail: '404' } }, { id: 'o2', kind: 'offer', ref: 'of_main', note: 'Backup offer' }],
+    [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c', 'f', 'pg'), E('q1', 'pg', 'ch'), E('q2', 'ch', 'o2')]);
+  const sCh = simulateVisit(CHF, CAT, { ...rv, vpn: true }, 'fixed');
+  ok(sCh.outcome === 'challenge' && J(sCh.lines) === J(["Caught at 'Block Reviewers': Is an ad reviewer", "Challenge at 'Check VPN': Uses a VPN / datacenter", '→ click within 8s',
+    "If they pass: Caught at 'Block Reviewers' → Review page → Backup offer", 'If not caught here: → Main offer']), 'simulate: a challenge after a catch reads catch, challenge, pass, and otherwise', J(sCh.lines));
+  ok(J(simulateVisit(R2b, CAT, { ...rv, bot: true }, 'fixed').lines) === J(["Caught at 'Block Reviewers': Is an ad reviewer", "Blocked at 'Block Bots': Is a bot", '→ 404 page', 'If not caught here: → Main offer']), 'simulate: a block after a catch still says what happens without the catch');
+  const SHR = G([nEntry, nF({ note: 'Block Reviewers' }), nOffer, nFb, nPg], [E('a', 'entry', 'f'), E('p', 'f', 'o'), L('c1', 'f', 'fb'), L('c2', 'f', 'pg'), E('q', 'pg', 'o')]);
+  ok(simulateVisit(SHR, CAT, rv, 'fixed').random === true && simulateVisit(R1, CAT, rv, 'fixed').random === false, 'simulate: fallback shares are a random A/B pick, one fallback line is not');
 }
 
 done();

@@ -1,9 +1,9 @@
 // Checks EVERY node and returns all problems per node, in plain words. Pure: the canvas only renders it.
 // Edge problems are reported on the edge's SOURCE node.
-import { badFilterChallenge, validateRuleConds, badMatrixNodes, graphHasOffer } from '../../src/index.js';
-import { nodeRows, effectiveWhen } from './rows.js';
+import { badFilterChallenge, validateRuleConds, badMatrixNodes, graphHasOffer, upgradeFallbacks } from '../../src/index.js';
+import { nodeRows, effectiveWhen, fallbackLines, isCaught } from './rows.js';
 import { isEmptyWhen } from './describe.js';
-import { isEntryNode } from './helpers.js';
+import { isEntryNode, nodeFootprint, NODE_W } from './helpers.js';
 
 const err = (text) => ({ level: 'error', text });
 const warn = (text) => ({ level: 'warning', text });
@@ -15,7 +15,8 @@ export function worstLevel(problems) {
 
 const EMPTY_REF = { lander: 'No page picked', offer: 'No offer picked', pixel: 'No pixel picked' };
 
-export function checkFlow(graph, catalog = {}) {
+export function checkFlow(rawGraph, catalog = {}) {
+  const graph = upgradeFallbacks(rawGraph);   // an old-style fallback_to flow is read as fallback lines
   const nodes = (graph && graph.nodes) || {};
   const edges = (graph && graph.edges) || [];
   const rules = catalog.rules || [];
@@ -26,9 +27,16 @@ export function checkFlow(graph, catalog = {}) {
     if (!list.some((q) => q.level === p.level && q.text === p.text)) list.push(p);
   };
 
+  // every box reachable from `start` through any line (loop-safe), `start` included
+  const reach = (start) => {
+    const seen = new Set([start]);
+    for (const cur of seen) for (const l of edges) if (l.from === cur && nodes[l.to]) seen.add(l.to);
+    return seen;
+  };
+
   // does this edge lead somewhere real (an existing, non-pixel node)?
   const isExit = (e) => nodes[e.to] && nodes[e.to].kind !== 'pixel';
-  const exitsOf = (id) => edges.filter((e) => e.from === id && isExit(e));
+  const exitsOf = (id) => edges.filter((e) => e.from === id && isExit(e) && !isCaught(e));
 
   // whens: the node's own, plus every outgoing edge's (attributed to this node)
   const whensOf = (id) => [nodes[id]?.when, ...edges.filter((e) => e.from === id).map((e) => e.when)].filter((w) => w && typeof w === 'object');
@@ -41,6 +49,21 @@ export function checkFlow(graph, catalog = {}) {
       if (isEmptyWhen(n.when)) add(id, err('No condition: this filter would block every visitor'));
       const bad = badFilterChallenge(n.action, n.challenge);
       if (bad) add(id, err(bad));
+      const lines = fallbackLines(graph, id);
+      if (n.action === 'fallback') {
+        if (!lines.length) add(id, err('No fallback offer yet: caught visitors get a 404 for now'));
+        else {
+          const cond = lines.filter((e) => effectiveWhen(graph, e));
+          if (cond.length && cond.length === lines.length) add(id, warn("No 'Otherwise' among the fallback offers: caught visitors who match none get a 404"));
+          if (cond.filter((e) => !Number.isFinite(e.priority)).length >= 2) add(id, warn('Several rows could match the same visitor: set priorities so the order is clear'));
+        }
+        // a fallback line whose box leads back (through any lines) to this filter
+        if (lines.some((e) => reach(e.to).has(id))) add(id, warn("This filter's fallback leads back to it (a loop)"));
+      } else if (edges.some((e) => e.from === id && isCaught(e))) {
+        add(id, warn("This filter's fallback offer isn't used: 'What happens to them?' isn't set to 'Send to a fallback offer'"));
+      }
+    } else if (edges.some((e) => e.from === id && isCaught(e))) {
+      add(id, warn('Only a filter can have a fallback offer'));
     }
 
     for (const w of whens) {
@@ -92,21 +115,22 @@ export function checkFlow(graph, catalog = {}) {
     if (badCode !== undefined) add(id, warn(`'${badCode}' isn't a 2-letter country code (use e.g. FR)`));
   }
 
-  // reachability from "Visitors arrive" (loop-safe); pixels are never warned about
-  const seen = new Set();
-  if (graph && nodes[graph.entry]) {
-    const queue = [graph.entry];
-    seen.add(graph.entry);
-    while (queue.length) {
-      const cur = queue.shift();
-      for (const e of edges) {
-        if (e.from === cur && nodes[e.to] && !seen.has(e.to)) { seen.add(e.to); queue.push(e.to); }
-      }
-    }
-  }
+  // reachability from "Visitors arrive", through every line; pixels are never warned about
+  const seen = graph && nodes[graph.entry] ? reach(graph.entry) : new Set();
   for (const [id, n] of Object.entries(nodes)) {
     if (n && n.kind !== 'pixel' && id !== graph.entry && !seen.has(id)) add(id, warn('Nothing leads here, so it never runs'));
   }
+
+  // two positioned boxes (each with the end box hanging under it) that overlap are both flagged
+  const rects = Object.entries(nodes)
+    .filter(([, n]) => n && Number.isFinite(n.x) && Number.isFinite(n.y))
+    .map(([id, n]) => ({ id, x: n.x, y: n.y, h: nodeFootprint(graph, id, rules) }));
+  rects.forEach((a, i) => rects.slice(i + 1).forEach((b) => {
+    if (a.x < b.x + NODE_W && b.x < a.x + NODE_W && a.y < b.y + b.h && b.y < a.y + a.h) {
+      add(a.id, warn('Overlaps another box: press Arrange or move it'));
+      add(b.id, warn('Overlaps another box: press Arrange or move it'));
+    }
+  }));
 
   if (!graphHasOffer(graph)) global.push(err('The flow never reaches an offer'));
 

@@ -64,9 +64,8 @@ export function TestVisitorPanel({ graph, catalog, result, onResult, onClose }) 
       </form>
       <div aria-live="polite">
         {result && (
-          <div className={`tvp-result ${result.outcome === 'offer' ? 'good' : 'bad'}`}>
-            <div className="tvp-text">{result.text}</div>
-            {result.passText && <div className="tvp-pass">{result.passText}</div>}
+          <div className={`tvp-result ${result.outcome === 'offer' ? 'good' : result.outcome === 'fallback' ? 'warn' : 'bad'}`}>
+            {(result.lines || [result.text]).map((line, i) => <div key={i} className={i ? 'tvp-pass' : 'tvp-text'}>{line}</div>)}
             {result.random && <div className="tvp-note dim">(random A/B pick: run again to see the other side)</div>}
           </div>
         )}

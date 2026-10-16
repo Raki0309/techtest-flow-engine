@@ -113,6 +113,19 @@ import { ok, done } from './helpers.mjs';
   ok(/empty/.test(badInlineWhens(emptyConds)), 'inline when: an empty conds list is refused');
   const both = { ...base, edges: [{ from: 'n_traffic', to: 'n_offer', weight: 1, when: { rule: 'rl_1', conds: [{ type: 'bot_ua' }] } }] };
   ok(/not both/.test(badInlineWhens(both)), 'inline when: a rule reference plus inline conds is refused');
+
+  // fallback lines: a fallback filter needs a caught line to a real offer
+  ok(badFilterChallenge('fallback', undefined) === null && badFilterChallenge('nonsense', undefined) !== null, 'challenge: action fallback is accepted, unknown actions still refused');
+  const fbv = (lines) => ({ ...base, nodes: { ...base.nodes, n_filter: { id: 'n_filter', kind: 'filter', when: BOT, action: 'fallback' } }, edges: [...base.edges, ...lines] });
+  ok(/at least one fallback line/.test(badFilterNodes(fbv([]))), 'filter: fallback without a fallback line is refused');
+  ok(badFilterNodes(fbv([{ id: 'c', from: 'n_filter', to: 'n_offer', caught: true }])) === null && validateGraph(fbv([{ id: 'c', from: 'n_filter', to: 'n_offer', caught: true }])) === null, 'filter: a fallback line to an offer is valid');
+  const noRef = fbv([{ id: 'c', from: 'n_filter', to: 'n_offer', caught: true }]); noRef.nodes.n_offer = { id: 'n_offer', kind: 'offer', ref: '' };
+  ok(/no offer picked/.test(badFilterNodes(noRef)), 'filter: a fallback line into an offer with nothing picked is refused');
+  ok(/only a filter can have fallback lines/.test(badFilterNodes({ ...base, edges: [...base.edges, { id: 'x', from: 'n_traffic', to: 'n_offer', caught: true }] })), 'edge: a fallback line must leave a filter');
+  ok(validateGraph({ ...base, nodes: { ...base.nodes, n_filter: { id: 'n_filter', kind: 'filter', when: BOT, action: 'fallback', fallback_to: 'n_offer' } } }) === null, 'validate: a v1 fallback_to flow is upgraded first');
+  const self = { id: 's', from: 'n_filter', to: 'n_filter', caught: true };
+  ok(badFilterNodes(fbv([self])) === 'filter node "n_filter": its fallback line points back at itself', 'filter: a fallback line back to its own filter is refused');
+  ok(badFilterNodes({ ...base, edges: [...base.edges, self] }) === 'filter node "n_filter": its fallback line points back at itself', 'filter: refused on a 404 filter too');
 }
 {
   const m = (over = {}, edges) => ({

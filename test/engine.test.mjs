@@ -1,6 +1,6 @@
 // Runtime engine: filters (terminal, chained, challenge), rule matching, matrix output.
 // Run: node test/engine.test.mjs
-import { resolveGraph, matchWhen, evalCond, pickWeighted, rngFor, CHALLENGE_TYPES } from '../src/index.js';
+import { resolveGraph, matchWhen, evalCond, pickWeighted, rngFor, CHALLENGE_TYPES, MAX_STEPS, upgradeFallbacks } from '../src/index.js';
 import { ok, rng, done } from './helpers.mjs';
 
 const US_ONLY = { logical: 'and', conds: [{ type: 'country', values: ['US'] }] };
@@ -295,6 +295,92 @@ const bot = { country: 'US', device: 'desktop', signals: { bot_ua: true } };
     { from: 'entry', to: 'a', weight: 1, when: US, priority: 1 },
     { from: 'entry', to: 'b', weight: 1, when: MOBILE }, ...toOffer] };
   ok(resolveGraph(gMixed, usMobile, () => 0.99).landers[0].id === 'a', 'priority: numbered edges beat unnumbered ones');
+}
+
+// ── fallback lines: a filter's caught lines, chosen like rows, then the walk continues ──────
+{
+  const BOTW = { logical: 'and', conds: [{ type: 'bot_ua' }] };
+  const DEW = { logical: 'and', conds: [{ type: 'country', values: ['DE'] }] };
+  const N = { entry: { kind: 'traffic' }, f: { kind: 'filter', when: BOTW, action: 'fallback' },
+    page: { kind: 'lander', ref_id: 'ld_p', kv_key: 'kp' }, g2: { kind: 'filter', when: DEW, action: '404' },
+    o_main: { kind: 'offer', ref_id: 'of_main', url_template: 'm' }, o_gb: { kind: 'offer', ref_id: 'of_gb', url_template: 'g' },
+    o_x: { kind: 'offer', ref_id: 'of_x', url_template: 'x' } };
+  const ln = (id, from, to, x = {}) => ({ id, from, to, weight: 1, ...x });
+  const FL = (fx = {}, extra = []) => ({ entry: 'entry', nodes: { ...N, f: { ...N.f, ...fx } }, edges: [
+    ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'),
+    ln('c1', 'f', 'o_gb', { caught: true, when: { country: ['GB'] }, priority: 1 }), ln('c2', 'f', 'page', { caught: true }),
+    ln('p2', 'page', 'o_x'), ...extra] });
+  const v = (country, bot = true) => ({ country, signals: { bot_ua: bot } });
+  const gb = resolveGraph(FL(), v('GB'), rng);
+  ok(gb.filtered === true && gb.action === 'fallback' && gb.node_id === 'f' && gb.offer.id === 'of_gb' && gb.landers.length === 0, 'fallback lines: priority 1 wins for a caught GB bot');
+  const us = resolveGraph(FL(), v('US'), rng);
+  ok(us.action === 'fallback' && us.offer.id === 'of_x' && us.landers.map((l) => l.id).join() === 'ld_p', 'fallback lines: Otherwise, and the walk continues through a page');
+  ok(!resolveGraph(FL(), v('US', false), rng).filtered && resolveGraph(FL(), v('US', false), rng).offer.id === 'of_main', 'fallback lines: a visitor who is not caught takes Passes');
+  const taken = []; resolveGraph(FL(), v('US'), rng, { onEdge: (e) => taken.push(e.id) });
+  ok(taken.join() === 'e0,c2,p2', 'onEdge: reports every line taken, in order');
+  const SH = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'), ln('s1', 'f', 'o_gb', { caught: true, weight: 1 }), ln('s2', 'f', 'o_x', { caught: true, weight: 3 })] };
+  ok(resolveGraph(SH, v('US'), () => 0.1).offer.id === 'of_gb' && resolveGraph(SH, v('US'), () => 0.9).offer.id === 'of_x', 'fallback lines: unconditional lines split by share');
+  const RJ = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'), ln('c9', 'f', 'g2', { caught: true }), ln('g', 'g2', 'o_x')] };
+  const de = resolveGraph(RJ, v('DE'), rng);
+  ok(de.filtered && de.node_id === 'g2' && de.action === '404' && resolveGraph(RJ, v('US'), rng).node_id === 'f', 'fallback lines: a later filter still checks, and the last catch decides');
+  const only = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'), ln('c1', 'f', 'o_gb', { caught: true, when: { country: ['GB'] } })] };
+  const no = resolveGraph(only, v('US'), rng);
+  ok(no.filtered && no.action === '404' && no.node_id === 'f' && no.challenge === null, 'fallback lines: no line fits → 404');
+  ok(resolveGraph(FL({ action: '404' }), v('GB'), rng).action === '404', 'fallback lines: ignored unless the action is fallback');
+  const TM = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('e1', 'entry', 'o_main'), ln('c1', 'f', 'o_gb', { caught: true })] };
+  ok(resolveGraph(TM, v('US', false), rng).offer.id === 'of_main' && resolveGraph(TM, v('US'), rng).offer.id === 'of_gb', 'fallback lines: a filter with only fallback lines is terminal (gates the line into it)');
+  ok(resolveGraph(FL(), v('GB'), rng, { skipFilters: true }).offer.id === 'of_main' && resolveGraph(FL(), v('GB'), rng, { bypassFilterId: 'f' }).offer.id === 'of_main', 'fallback lines: skip / bypass ignore the filter');
+  const LP = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'), ln('c1', 'f', 'entry', { caught: true })] };
+  ok(resolveGraph(LP, v('US'), rng) === null, 'fallback lines: a loop ends at the step guard (dead end)');
+  const DE2 = { ...FL(), edges: [ln('e0', 'entry', 'f'), ln('p1', 'f', 'o_main'), ln('c1', 'f', 'page', { caught: true })] };
+  ok(resolveGraph(DE2, v('US'), rng) === null, 'fallback lines: a fallback into a dead end returns null');
+  const RT = { entry: 'entry', nodes: { entry: { kind: 'route' }, o_main: N.o_main, o_gb: N.o_gb }, edges: [ln('r1', 'entry', 'o_gb', { caught: true }), ln('r2', 'entry', 'o_main')] };
+  ok(resolveGraph(RT, v('US'), rng).offer.id === 'of_main', 'fallback lines: a caught flag on a non-filter line is ignored');
+  const v1 = { entry: 'entry', nodes: { entry: { id: 'entry', kind: 'traffic' }, f: { id: 'f', kind: 'filter', when: BOTW, action: 'fallback', fallback_to: 'o' }, o: { id: 'o', kind: 'offer', ref: 'of_a' } }, edges: [{ id: 'a', from: 'entry', to: 'f' }] };
+  const up = upgradeFallbacks(v1);
+  ok(!('fallback_to' in up.nodes.f) && JSON.stringify(up.edges[1]) === JSON.stringify({ id: 'fb_f', from: 'f', to: 'o', weight: 1, when: null, caught: true }) && upgradeFallbacks(up) === up && !('caught' in v1.edges[0]) && 'fallback_to' in v1.nodes.f, 'upgradeFallbacks: v1 fallback_to becomes one fallback line, once, without touching the input');
+}
+
+// ── the step guard: a line picked on the last step into a terminal filter still answers ───────
+{
+  // entry → l1 → … → l31 → terminal 404 filter: the line into the filter is picked on step MAX_STEPS
+  const chain = { entry: 'entry', nodes: { entry: { kind: 'traffic' }, t: { kind: 'filter', when: BOT } }, edges: [] };
+  let prev = 'entry';
+  for (let i = 1; i < MAX_STEPS; i++) {
+    chain.nodes[`l${i}`] = { kind: 'lander', ref_id: `ld${i}`, kv_key: `k${i}` };
+    chain.edges.push({ from: prev, to: `l${i}`, weight: 1 });
+    prev = `l${i}`;
+  }
+  chain.edges.push({ from: prev, to: 't', weight: 1 });
+  const last = resolveGraph(chain, bot, rng);
+  ok(last?.filtered === true && last.node_id === 't' && last.action === '404', 'step guard: a terminal 404 filter picked on the last step still answers 404', JSON.stringify(last));
+  const seen = []; resolveGraph(chain, bot, rng, { onVisit: (id) => seen.push(id) });
+  ok(seen.length === MAX_STEPS + 1 && seen[seen.length - 1] === 't', 'step guard: the terminal filter is still the last node visited');
+  ok(resolveGraph(chain, human, rng) === null, 'step guard: a visitor the terminal filter does not match dead-ends as before');
+}
+
+// ── fallback lines: behaviour the build left untested ─────────────────────────────────────────
+{
+  const N = { entry: { kind: 'traffic' }, pre: { kind: 'lander', ref_id: 'ld_pre', kv_key: 'kpre' }, f: { kind: 'filter', when: BOT, action: 'fallback' },
+    t: { kind: 'filter', when: US_ONLY }, o_main: { kind: 'offer', ref_id: 'of_main', url_template: 'm' }, o_gb: { kind: 'offer', ref_id: 'of_gb', url_template: 'g' } };
+  const ln = (id, from, to, x = {}) => ({ id, from, to, weight: 1, ...x });
+  // entry → pre (a page) → f; f Passes → o_main; f caught → o_gb
+  const PRE = { entry: 'entry', nodes: N, edges: [ln('e0', 'entry', 'pre'), ln('e1', 'pre', 'f'), ln('p', 'f', 'o_main'), ln('c', 'f', 'o_gb', { caught: true })] };
+  const pre = resolveGraph(PRE, bot, rng);
+  ok(pre.action === 'fallback' && pre.offer.id === 'of_gb' && pre.landers.map((l) => l.id).join() === 'ld_pre', 'fallback lines: pages seen before the catch stay in landers');
+  const order = []; resolveGraph(PRE, bot, rng, { onVisit: (id) => order.push(id) });
+  ok(order.join() === 'entry,pre,f,o_gb', 'onVisit: a walk through a fallback line is recorded in order');
+  // f caught → t (a terminal 404 filter, its condition on the line) or → o_gb
+  const TB = { entry: 'entry', nodes: N, edges: [ln('e0', 'entry', 'f'), ln('p', 'f', 'o_main'), ln('c1', 'f', 't', { caught: true }), ln('c2', 'f', 'o_gb', { caught: true })] };
+  ok(resolveGraph(TB, bot, rng).node_id === 't' && resolveGraph(TB, bot, rng, { bypassFilterId: 't' }).offer.id === 'of_gb', 'fallback lines: a line into a bypassed terminal filter is left out');
+  // a terminal filter used as the entry (validate refuses it): everyone reaching it is caught
+  const TE = { entry: 't', nodes: { t: N.t, o_main: N.o_main }, edges: [] };
+  ok(resolveGraph(TE, { country: 'DE', signals: {} }, rng)?.node_id === 't', 'terminal filter as the entry: caught on arrival, whatever the visitor');
+  // upgradeFallbacks: a v1 fallback_to whose caught line already exists adds no second line
+  const v1 = { entry: 'entry', nodes: { entry: { id: 'entry', kind: 'traffic' }, f: { id: 'f', kind: 'filter', when: BOT, action: 'fallback', fallback_to: 'o' }, o: { id: 'o', kind: 'offer', ref: 'of_a' } },
+    edges: [{ id: 'a', from: 'entry', to: 'f' }, { id: 'c', from: 'f', to: 'o', caught: true }] };
+  const up = upgradeFallbacks(v1);
+  ok(!('fallback_to' in up.nodes.f) && up.edges.length === 2 && up.edges.filter((e) => e.caught).map((e) => e.id).join() === 'c', 'upgradeFallbacks: an existing caught line to the same box is not doubled');
 }
 
 done();

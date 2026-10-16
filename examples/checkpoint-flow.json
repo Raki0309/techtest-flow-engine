@@ -1,5 +1,5 @@
 {
-  "description": "Every visitor passes three checkpoints (ad reviewers 404, bots 404, datacenter/VPN click challenge), then a \"Who is the visitor?\" route sends US phone visitors to an A/B split between two quiz pages and the main offer, European visitors to the advertorial and EU offer, and everyone else to the review page and backup offer. Route rows are checked in priority order, with the last row as the fallback.",
+  "description": "Every visitor passes three checkpoints (ad reviewers go to a safe fallback offer instead of a 404; bots 404; datacenter/VPN click challenge), then a \"Who is the visitor?\" route sends US phone visitors to an A/B split between two quiz pages and the main offer, European visitors to the advertorial and EU offer, and everyone else to the review page and backup offer. Route rows are checked in priority order, with 'Otherwise' as the last row.",
   "graph": {
     "entry": "entry",
     "nodes": {
@@ -16,7 +16,7 @@
           "rule": "rl_reviewer"
         },
         "note": "Block Reviewers",
-        "action": "404",
+        "action": "fallback",
         "x": 340,
         "y": 180
       },
@@ -120,6 +120,14 @@
         "note": "Backup offer",
         "x": 1900,
         "y": 580
+      },
+      "offer_fallback": {
+        "id": "offer_fallback",
+        "kind": "offer",
+        "ref": "of_safe",
+        "note": "Fallback offer",
+        "x": 640,
+        "y": 760
       },
       "px_meta": {
         "id": "px_meta",
@@ -238,6 +246,14 @@
         "to": "offer_backup",
         "weight": 1,
         "when": null
+      },
+      {
+        "id": "e_reviewers_fallback",
+        "from": "stop_reviewers",
+        "to": "offer_fallback",
+        "weight": 1,
+        "when": null,
+        "caught": true
       }
     ]
   },
@@ -269,6 +285,9 @@
       },
       "of_backup": {
         "url_template": "https://offer-backup.example.com/?click={click_id}"
+      },
+      "of_safe": {
+        "url_template": "https://offer-safe.example.com/?click={click_id}"
       }
     },
     "rules": {

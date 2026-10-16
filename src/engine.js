@@ -79,37 +79,45 @@ export function matchWhen(when, ctx) {
 
 export const CHALLENGE_TYPES = ['click', 'honeypot', 'timing', 'motion'];
 
-// Compiled graph: {entry, nodes:{id:{kind, ...}}, edges:[{from, to, weight, when}]}.
-// Walks from entry, weighted-picks among the eligible outgoing edges, until an offer node.
-// Returns {landers, offer}, {filtered, node_id, action, challenge}, or null for a dead end.
+// The walk gives up after this many steps (a loop), and returns null like a dead end.
+export const MAX_STEPS = 32;
+
+// Compiled graph: {entry, nodes:{id:{kind, ...}}, edges:[{id?, from, to, weight, when, caught?}]}.
+// Walks from entry, picking among the eligible outgoing edges (matching ruled edges first, else the
+// unconditional ones by weight), until an offer node. Returns:
+//   {landers, offer}                                         never caught
+//   {filtered, node_id, action, challenge}                   caught by a 404 / challenge filter
+//   {filtered, node_id, action: 'fallback', landers, offer}  caught by a fallback filter, then sent
+//                                                            down one of its fallback lines to an offer
+//   null                                                     dead end
+// A filter with action 'fallback' picks among its fallback lines (edges with caught: true) by the
+// same rules as any other edge and the walk continues from there; with no line that fits it
+// answers 404. A caught edge that doesn't leave a filter is never taken.
 // skipFilters: preview only, ignores every filter.
 // bypassFilterId: ignores exactly one named filter, every other filter still applies.
 // onVisit(id, node): optional, called once for every node actually reached, entry through the
-// final node, in order. Pure instrumentation, changes nothing about the walk or the return value.
-export function resolveGraph(graph, ctx, rng, { skipFilters = false, bypassFilterId = null, onVisit = null } = {}) {
+// final node, in order. onEdge(edge): optional, called once for every edge taken, in order.
+// Pure instrumentation, changes nothing about the walk or the return value.
+export function resolveGraph(graph, ctx, rng, { skipFilters = false, bypassFilterId = null, onVisit = null, onEdge = null } = {}) {
   const nodes = graph.nodes || {};
   const edges = graph.edges || [];
-  let cur = graph.entry, guard = 0;
+  let cur = graph.entry, guard = 0, lastCatch = null;
   const landers = [];
-  // A filter with an outgoing edge is chained: everyone reaches it, and a match blocks while a
-  // non-match continues down that edge. A filter with no outgoing edge gates the edge INTO it,
-  // so reaching it at all means a match.
-  const chained = (id) => nodes[id]?.kind === 'filter' && edges.some((e) => e.from === id);
+  // fallback lines are only ever taken by a caught filter; anywhere else they are never walked
+  const isCaughtLine = (e) => !!e.caught;
+  // A filter with an outgoing edge that isn't a fallback line is chained: everyone reaches it, and a
+  // match is caught while a non-match continues down that edge. A filter with no such edge gates the
+  // edge INTO it, so reaching it at all means a match.
+  const chained = (id) => nodes[id]?.kind === 'filter' && edges.some((e) => e.from === id && !isCaughtLine(e));
   // an edge's condition is its own `when`, or the `when` of the path / terminal filter it points at
   const isGated = (id) => { const k = nodes[id]?.kind; return k === 'path' || (k === 'filter' && !chained(id)); };
   const edgeWhen = (e) => { const t = isGated(e.to) ? nodes[e.to] : null; return (t ? t.when : e.when) || null; };
   const dropFilter = (id) => skipFilters || id === bypassFilterId;
-  while (cur && guard++ < 32) {
-    const curNode = nodes[cur];
-    if (onVisit) onVisit(cur, curNode);
-    if (curNode?.kind === 'filter' && chained(cur) && !dropFilter(cur) && matchWhen(curNode.when, ctx)) {
-      return { filtered: true, node_id: cur,
-        action: curNode.action === 'challenge' ? 'challenge' : '404', challenge: curNode.challenge || null };
-    }
-    // pixel nodes are attachment points, never waypoints
-    const outs = edges.filter((e) => e.from === cur && nodes[e.to]?.kind !== 'pixel'
-      && !(nodes[e.to]?.kind === 'filter' && !chained(e.to) && dropFilter(e.to)));
-    // ruled edges that match win; otherwise the unconditional edges split by weight
+  // pixel nodes are attachment points, never waypoints
+  const usable = (e) => nodes[e.to]?.kind !== 'pixel'
+    && !(nodes[e.to]?.kind === 'filter' && !chained(e.to) && dropFilter(e.to));
+  // one chooser for every pool: ruled edges that match win; otherwise the unconditional edges split by weight
+  const choose = (outs) => {
     const ruled = outs.filter((e) => { const w = edgeWhen(e); return w && Object.keys(w).length; });
     const matchingRuled = ruled.filter((e) => matchWhen(edgeWhen(e), ctx));
     // an optional numeric priority narrows the matching ruled edges to the lowest number, unless a
@@ -122,22 +130,42 @@ export function resolveGraph(graph, ctx, rng, { skipFilters = false, bypassFilte
       ruledPool = ruledPool.filter((e) => prio(e) === top);
     }
     const pool = ruledPool.length ? ruledPool : outs.filter((e) => { const w = edgeWhen(e); return !w || !Object.keys(w).length; });
-    if (!pool.length) break;
+    if (!pool.length) return null;
     // a matching terminal filter beats every other matching edge instead of taking a weighted share
-    const pick = pool.find((e) => nodes[e.to]?.kind === 'filter' && !chained(e.to)) || pickWeighted(pool, rng);
+    return pool.find((e) => nodes[e.to]?.kind === 'filter' && !chained(e.to)) || pickWeighted(pool, rng);
+  };
+  // the answer of a 404 / challenge filter that caught the visitor
+  const stopAt = (id, n) => ({ filtered: true, node_id: id, action: n.action === 'challenge' ? 'challenge' : '404', challenge: n.challenge || null });
+  while (cur && guard++ < MAX_STEPS) {
+    const curNode = nodes[cur];
+    if (onVisit) onVisit(cur, curNode);
+    // caught here: a chained filter whose condition matches, or a terminal filter the walk reached
+    const caughtHere = curNode?.kind === 'filter' && !dropFilter(cur) && (!chained(cur) || matchWhen(curNode.when, ctx));
+    let pick;
+    if (caughtHere) {
+      if (curNode.action !== 'fallback') return stopAt(cur, curNode);
+      pick = choose(edges.filter((e) => e.from === cur && isCaughtLine(e) && usable(e)));
+      if (!pick) return { filtered: true, node_id: cur, action: '404', challenge: null };
+      lastCatch = cur;
+    } else {
+      pick = choose(edges.filter((e) => e.from === cur && !isCaughtLine(e) && usable(e)));
+      if (!pick) break;
+    }
     const t = nodes[pick.to];
     if (!t) break;
+    if (onEdge) onEdge(pick);
+    // a terminal filter: a 404 / challenge one answers at once; a fallback one catches on the next step
     if (t.kind === 'filter' && !chained(pick.to)) {
-      if (onVisit) onVisit(pick.to, t);
-      return { filtered: true, node_id: pick.to,
-        action: t.action === 'challenge' ? 'challenge' : '404', challenge: t.challenge || null };
+      if (t.action !== 'fallback') { if (onVisit) onVisit(pick.to, t); return stopAt(pick.to, t); }
+      cur = pick.to; continue;
     }
     if (t.kind === 'offer') {
       if (onVisit) onVisit(pick.to, t);
-      return { landers, offer: { id: t.ref_id, url_template: t.url_template } };
+      const offer = { id: t.ref_id, url_template: t.url_template };
+      return lastCatch ? { filtered: true, node_id: lastCatch, action: 'fallback', landers, offer } : { landers, offer };
     }
     // `bind` names the matrix node a lander row was expanded from
-    if (t.kind === 'lander') { landers.push({ id: t.ref_id, kv_key: t.kv_key, source: t.source, node_id: t.bind || pick.to }); cur = pick.to; continue; }
+    if (t.kind === 'lander') landers.push({ id: t.ref_id, kv_key: t.kv_key, source: t.source, node_id: t.bind || pick.to });
     cur = pick.to;
   }
   return null;

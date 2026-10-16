@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { NODE_W, HEADER_H, ROW_H, ADD_H, END_W, END_DROP, gid, layoutGraph, placeMissing, matrixText, rowPortY,
-  canAddFrom, boxHeight, endBoxHeight, nodeFootprint, retargetAllowed, isEntryNode } from './helpers.js';
+import { NODE_W, HEADER_H, END_W, END_DROP, gid, layoutGraph, placeMissing, matrixText, rowPortY, addPortY,
+  canAddFrom, canAddFallbackFrom, boxHeight, endBoxHeight, endBoxText, nodeFootprint, retargetAllowed, isEntryNode, dropCurve } from './helpers.js';
 import { nodeRows, lineStyle, pixelLineStyle, HIGHLIGHT, BLOCKED_RED, PALETTE } from './rows.js';
-import { addRowEdge, retargetEdge, deleteEdge, removeNode } from './edit.js';
-import { challengeShort } from './simulate.js';
+import { addRowEdge, addFallbackLine, retargetEdge, deleteEdge, removeNode } from './edit.js';
+import { TYPE_LABEL } from './names.js';
 import { NodeBox } from './NodeBox.jsx';
 import { Legend } from './Legend.jsx';
 
 // The canvas. Every node lists its outgoing connections as rows (rows.js), each row has its own
-// exit dot, lines are styled by meaning, every filter gets an automatic 404 / challenge end box that
-// hangs below it ("falls out of the flow"), and the flow reads left to right. Geometry is fixed
+// exit dot, lines are styled by meaning, a filter without a fallback offer gets an automatic 404 /
+// challenge end box that hangs below it ("falls out of the flow"), and the flow reads left to right. Geometry is fixed
 // (helpers.js), so nothing is measured.
 // Module-level node clipboard: a copied node survives closing the builder, so it can be pasted
 // into another flow too (refs are catalog-global lander/offer ids).
@@ -23,20 +23,16 @@ const sCurve = (a, b) => {
   const dx = Math.max(40, Math.abs(b.x - a.x) / 2);
   return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
 };
-// pixel lines leave a node's bottom centre downwards, then arrive horizontally
-const dropCurve = (a, b) => {
-  const dy = Math.max(40, Math.abs(b.y - a.y) / 2), dx = Math.max(40, Math.abs(b.x - a.x) / 2);
-  return `M ${a.x} ${a.y} C ${a.x} ${a.y + dy}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`;
-};
+// pixel lines leave a node's bottom centre downwards, then arrive horizontally (helpers.dropCurve)
 const inSet = (s, v) => !!s && (typeof s.has === 'function' ? s.has(v) : Array.isArray(s) && s.includes(v));
 
 // Rows, box height and column footprint (box + a filter's end box below it) of every node.
-function measure(graph, rules, readOnly) {
+function measure(graph, rules, readOnly, nameOf) {
   const rowsOf = {}, hOf = {}, fpOf = {};
   for (const [id, n] of Object.entries(graph.nodes || {})) {
     if (!n) continue;
-    rowsOf[id] = nodeRows(graph, id, rules);
-    hOf[id] = boxHeight(n, rowsOf[id].length, !readOnly && canAddFrom(n));
+    rowsOf[id] = nodeRows(graph, id, rules, nameOf);
+    hOf[id] = boxHeight(n, rowsOf[id].length, !readOnly && canAddFrom(n), !readOnly && canAddFallbackFrom(n));
     fpOf[id] = nodeFootprint(graph, id, rules, readOnly);
   }
   return { rowsOf, hOf, fpOf };
@@ -59,11 +55,16 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
     offer: Object.fromEntries(offers.map((o) => [o.id, o.name])),
     pixel: Object.fromEntries(pixels.map((p) => [p.id, p.name])),
   }), [landers, offers, pixels]);
+  // A box's own name: its note, else the catalog name of what it picked. The header and a row's
+  // "→ name" fall back differently: the header already shows the box type, so it adds nothing (or a
+  // lookup table's summary); a row has no type beside it, so it names the type ("→ Offer").
+  const ownName = useMemo(() => (n) => n.note || catalog[n.kind]?.[n.ref], [catalog]);
+  const rowName = useMemo(() => (n) => ownName(n) || TYPE_LABEL[n.kind], [ownName]);
   const scrollRef = useRef(null);
   const [drag, setDrag] = useState(null);   // {id, dx, dy}: moving a node
-  const [conn, setConn] = useState(null);   // {from, edgeId|null, ax, ay, x, y}: dragging an exit
+  const [conn, setConn] = useState(null);   // {from, edgeId|null, fallback?, ax, ay, x, y}: dragging an exit
   const edges = graph.edges || [];
-  const { rowsOf, hOf, fpOf } = useMemo(() => measure(graph, rules, readOnly), [graph, rules, readOnly]);
+  const { rowsOf, hOf, fpOf } = useMemo(() => measure(graph, rules, readOnly, rowName), [graph, rules, readOnly, rowName]);
   // first paint of an old flow without positions: the same layout the effect below stores
   const nodes = useMemo(() => placeMissing(graph.nodes || {}, graph.edges || [], (id) => fpOf[id]), [graph.nodes, graph.edges, fpOf]);
 
@@ -87,11 +88,11 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
     const n = nodes[id], p = relPos(e);
     setDrag({ id, dx: p.x - n.x, dy: p.y - n.y }); setSel({ type: 'node', id });
   };
-  const startConn = (e, from, edgeId, a) => {
+  const startConn = (e, from, edgeId, a, fallback = false) => {
     if (readOnly) return;
     e.stopPropagation(); e.preventDefault();
     const p = relPos(e);
-    setConn({ from, edgeId, ax: a.x, ay: a.y, x: p.x, y: p.y });
+    setConn({ from, edgeId, fallback, ax: a.x, ay: a.y, x: p.x, y: p.y });
   };
   const onMove = (e) => {
     if (drag) {
@@ -102,7 +103,7 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
   const onUp = (e) => {
     if (conn) {
       const to = e.target?.closest?.('.gnode')?.dataset?.id;
-      if (to) setGraph((g) => (conn.edgeId ? retargetGuarded(g, conn.edgeId, to) : addGuarded(g, conn.from, to)));
+      if (to) setGraph((g) => (conn.fallback ? addFallbackLine(g, conn.from, to) : conn.edgeId ? retargetGuarded(g, conn.edgeId, to) : addGuarded(g, conn.from, to)));
       setConn(null);
     }
     if (drag) setGraph((g) => { const n = g.nodes[drag.id]; if (!n) return g;   // snap to grid on release
@@ -190,7 +191,7 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
   // ── what to draw ──────────────────────────────────────────────────────────
   const nodeList = Object.values(nodes).filter(Boolean);
   const hiOn = !!highlight;
-  const nameOf = (n) => n.note || catalog[n.kind]?.[n.ref] || (n.kind === 'matrix' ? matrixText(n) : '');
+  const nameOf = (n) => ownName(n) || (n.kind === 'matrix' ? matrixText(n) : '');   // the header's name
 
   // lines: one per row, then pixel lines, then any other edge (so nothing is ever hidden)
   const lines = [];
@@ -215,18 +216,18 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
     const f = nodes[e.from], t = nodes[e.to];
     if (drawn.has(e) || !f || !t) continue;
     const key = `x:${e.id || `${e.from}>${e.to}`}`;
-    // pixel lines leave the bottom centre (a filter's: its bottom-left quarter, the centre is the drop line)
+    // pixel lines leave the bottom centre (a filter's: its bottom-left quarter, as its end box's red line drops from the centre)
     const px = f.x + (f.kind === 'filter' ? NODE_W / 4 : NODE_W / 2);
     if (t.kind === 'pixel') lines.push({ key, edgeId: e.id, s: pixelLineStyle(), d: dropCurve({ x: px, y: f.y + hOf[f.id] }, { x: t.x, y: t.y + hOf[t.id] / 2 }) });
     else lines.push({ key, edgeId: e.id, s: lineStyle({ style: 'plain' }, e), d: sCurve({ x: f.x + NODE_W, y: f.y + HEADER_H / 2 }, { x: t.x, y: t.y + HEADER_H / 2 }) });
   }
 
-  // automatic end box under every filter (not stored, cannot be dragged): the blocked visitors
-  // "fall out of the flow" down a red line from the node's bottom centre to the box's top centre
-  const ends = nodeList.filter((n) => n.kind === 'filter').map((n) => {
+  // automatic end box under every filter without fallback lines (not stored, cannot be dragged): the
+  // blocked visitors "fall out of the flow" down a red line from the node's bottom centre to the box's
+  // top centre. The text comes from helpers.endBoxText (null: no box, the fallback lines carry them).
+  const ends = nodeList.map((n) => ({ n, text: endBoxText(graph, n.id) })).filter((x) => x.text).map(({ n, text }) => {
     const cx = n.x + NODE_W / 2, bottom = n.y + hOf[n.id];
-    return { id: n.id, cx, bottom, top: bottom + END_DROP, h: endBoxHeight(n), hi: hiOn && highlight.endFor === n.id,
-      text: n.action === 'challenge' ? [`Challenge · ${challengeShort(n.challenge)}`, 'pass → continues · fail → 404'] : ['404 page · nothing recorded'] };
+    return { id: n.id, cx, bottom, top: bottom + END_DROP, h: endBoxHeight(n), hi: hiOn && highlight.endFor === n.id, text };
   });
 
   const bounds = nodeList.reduce((m, n) => ({
@@ -274,15 +275,15 @@ export function GraphCanvas({ graph, setGraph, sel, setSel, landers = [], offers
           </svg>
           {nodeList.map((n) => {
             const rows = rowsOf[n.id] || [];
-            const add = !readOnly && canAddFrom(n);
-            const rowCount = Math.max(1, rows.length);
+            const add = !readOnly && canAddFrom(n), addFallback = !readOnly && canAddFallbackFrom(n);
             return (
               <NodeBox key={n.id} n={n} name={nameOf(n)} catalogName={catalog[n.kind]?.[n.ref]} rows={rows} styles={styleOf[n.id] || []} height={hOf[n.id]}
-                add={add} selected={sel?.type === 'node' && sel.id === n.id} faded={hiOn && !inSet(highlight.nodes, n.id)}
+                add={add} addFallback={addFallback} selected={sel?.type === 'node' && sel.id === n.id} faded={hiOn && !inSet(highlight.nodes, n.id)}
                 problems={problems?.[n.id]} readOnly={readOnly}
                 onDown={(e) => onNodeDown(e, n.id)}
                 onExitDown={(e, r, i) => startConn(e, n.id, r.edgeId, { x: n.x + NODE_W, y: rowPortY(n, i) })}
-                onAddDown={(e) => startConn(e, n.id, null, { x: n.x + NODE_W, y: n.y + HEADER_H + rowCount * ROW_H + ADD_H / 2 })} />
+                onAddDown={(e) => startConn(e, n.id, null, { x: n.x + NODE_W, y: addPortY(n, rows.length, 0) })}
+                onAddFallbackDown={(e) => startConn(e, n.id, null, { x: n.x + NODE_W, y: addPortY(n, rows.length, 1) }, true)} />
             );
           })}
           {ends.map((en) => (

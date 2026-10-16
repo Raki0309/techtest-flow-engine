@@ -91,7 +91,8 @@ const visitor = (over = {}) => ({ country: 'US', device: 'mobile', signals: {}, 
   ok(validateGraph(flow.graph) === null, 'checkpoint flow: valid');
   const c = compileGraph(flow.graph, flow.refs);
   const stoppedAt = (signals) => resolveGraph(c, visitor({ signals }), rng);
-  ok(stoppedAt({ moderator: true }).node_id === 'stop_reviewers', 'checkpoint flow: an ad reviewer is stopped first');
+  const rev = stoppedAt({ moderator: true });
+  ok(rev.filtered && rev.action === 'fallback' && rev.node_id === 'stop_reviewers' && rev.offer?.id === 'of_safe' && rev.landers.length === 0, 'checkpoint flow: a caught reviewer goes to the fallback offer');
   ok(stoppedAt({ moderator: true, bot_ua: true }).node_id === 'stop_reviewers', 'checkpoint flow: a reviewer who is also a bot counts as a reviewer');
   ok(stoppedAt({ bot_ua: true }).node_id === 'stop_bots', 'checkpoint flow: a bot is stopped');
   ok(stoppedAt({ datacenter: true }).action === 'challenge', 'checkpoint flow: datacenter traffic gets a challenge, not a 404');
@@ -132,5 +133,16 @@ const visitor = (over = {}) => ({ country: 'US', device: 'mobile', signals: {}, 
   const picks = [{ plan: 'a' }, { plan: 'zzz' }].flatMap((query) => [0, 0.25, 0.5, 0.75, 0.999]
     .map((x) => resolveGraph(c, visitor({ query }), () => x).offer.id));
   ok(picks.every((id) => id === 'of_b'), 'matrix: a page lookup table\'s priority-1 line always wins', picks.join());
+}
+{
+  // a filter's fallback lines survive compiling and route the caught visitor
+  const cg = { entry: 'entry', nodes: { entry: { id: 'entry', kind: 'traffic' }, f: { id: 'f', kind: 'filter', when: { conds: [{ type: 'bot_ua' }] }, action: 'fallback' },
+    o: { id: 'o', kind: 'offer', ref: 'of_a' }, o2: { id: 'o2', kind: 'offer', ref: 'of_b' } },
+    edges: [{ id: 'a', from: 'entry', to: 'f' }, { id: 'b', from: 'f', to: 'o2' }, { id: 'c', from: 'f', to: 'o', caught: true }] };
+  const cc = compileGraph(cg, refs);
+  ok(cc.nodes.f.action === 'fallback' && cc.edges.find((e) => e.id === 'c').caught === true && cc.edges.find((e) => e.id === 'b').caught === undefined, 'compile: fallback lines keep id and caught');
+  ok(resolveGraph(cc, visitor({ signals: { bot_ua: true } }), rng).offer.url_template === 'https://a.example/?c={click_id}', 'compile: a caught bot reaches the fallback line\'s offer');
+  const cv1 = compileGraph({ ...cg, nodes: { ...cg.nodes, f: { ...cg.nodes.f, fallback_to: 'o' } }, edges: cg.edges.slice(0, 2) }, refs);
+  ok(cv1.edges.some((e) => e.caught && e.to === 'o') && resolveGraph(cv1, visitor({ signals: { bot_ua: true } }), rng).action === 'fallback', 'compile: a v1 fallback_to flow is upgraded and routes');
 }
 done();

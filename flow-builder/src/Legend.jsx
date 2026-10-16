@@ -7,7 +7,7 @@ const SAMPLES = [
   { label: 'Priority 2, 3 …', s: lineStyle({ style: 'priority' }) },
   { label: 'Otherwise', s: lineStyle({ style: 'otherwise' }) },
   { label: 'A/B share', s: lineStyle({ style: 'share' }), tag: '50%' },
-  { label: 'Blocked', s: lineStyle({ style: 'blocked' }) },
+  { label: 'Caught by a filter', s: lineStyle({ style: 'blocked' }) },
   { label: 'Tracking (pixel)', s: pixelLineStyle() },
   { label: 'Test-a-visitor path', s: { color: HIGHLIGHT.color, width: HIGHLIGHT.width, dash: null } },
 ];

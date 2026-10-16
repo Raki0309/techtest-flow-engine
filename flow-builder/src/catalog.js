@@ -12,6 +12,7 @@ export const LANDERS = [
 export const OFFERS = [
   { id: 'of_main', name: 'Everflow #1442 — Main offer' },
   { id: 'of_backup', name: 'Everflow #1443 — Backup offer' },
+  { id: 'of_safe', name: 'Everflow #1450 — Safe offer' },
   { id: 'of_eu', name: 'Custom network — EU offer' },
 ];
 
